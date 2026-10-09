@@ -497,16 +497,23 @@ export function formatPoolLine(pool: PoolInfo | undefined, width = DEFAULT_BAR_W
 }
 
 /**
- * LOCAL FORK: the line under the pool bar, e.g. `last #8 · 1 spent`.
+ * LOCAL FORK: the line under the pool bar, e.g.
+ * `6648/9000 · last #8 · 1 spent`.
+ *
+ * Leads with absolute credits because the percentage alone cannot tell you how
+ * much a month is actually worth. Kept at 29 columns so there is headroom for
+ * the totals to grow (a 10th key widens `6648/9000` to `6648/10000`) before it
+ * would clip the 36-column sidebar.
  *
  * Wording is deliberate: the proxy exposes no rotation cursor, so this reports
  * the last key a real call went through, not a "current" one. The reset
  * countdown is deliberately omitted -- `formatResetLine` already sits above the
  * quota bar and repeating it here would just burn sidebar width.
  */
-export function formatPoolTailLine(pool: PoolInfo | undefined): string {
+export function formatPoolTailLine(snapshot: QuotaSnapshot): string {
+  const pool = snapshot.pool;
   if (!pool || pool.total === 0) return "";
-  const parts: string[] = [];
+  const parts: string[] = [`${snapshot.remaining}/${snapshot.limit}`];
   if (pool.lastUsed) parts.push(`last ${keyTag(pool.lastUsed)}`);
   else parts.push("unused");
   if (pool.exhausted > 0) parts.push(`${pool.exhausted} spent`);

@@ -601,7 +601,7 @@ test("derivePoolInfo accepts SQLite 0/1 flags and boolean flags alike", () => {
 
 test("formatPoolLine renders an empty string without pool detail", () => {
   assert.equal(formatPoolLine(undefined), "");
-  assert.equal(formatPoolTailLine(undefined), "");
+  assert.equal(formatPoolTailLine({ ...KEY_PAYLOAD_SNAPSHOT }), "");
   // A stats-only proxy falls back to the original one-line summary.
   assert.deepEqual(formatPoolDetailLines({ ...KEY_PAYLOAD_SNAPSHOT }, Date.UTC(2026, 9, 10)), [
     "400/1000 left · 40% · resets in 22d 0h",
@@ -613,13 +613,16 @@ test("formatPoolLine stays within the sidebar width", () => {
   assert.ok(pool);
   const line = formatPoolLine(pool);
   assert.equal(line.length, SIDEBAR_WIDTH);
-  assert.match(line, /8\/9|2\/3|2\/3 keys$/);
+  assert.match(line, /2\/3 keys$/);
 });
 
-test("formatPoolTailLine reports the last used key and the spent count", () => {
+test("formatPoolTailLine leads with absolute credits, then last used and spent", () => {
   const pool = derivePoolInfo(PROXY_KEYS);
   assert.ok(pool);
-  assert.equal(formatPoolTailLine(pool), "last #2 · 1 spent");
+  const line = formatPoolTailLine({ ...KEY_PAYLOAD_SNAPSHOT, pool });
+  assert.equal(line, "400/1000 · last #2 · 1 spent");
+  // Headroom matters: the totals widen as keys are added, and the sidebar is 36.
+  assert.ok(line.length <= SIDEBAR_WIDTH - 7, `line is ${line.length} cols, too wide to grow`);
 });
 
 test("formatPoolTailLine says unused when no key has been called", () => {
@@ -628,7 +631,17 @@ test("formatPoolTailLine says unused when no key has been called", () => {
   });
   assert.ok(pool);
   assert.equal(pool.lastUsed, null);
-  assert.equal(formatPoolTailLine(pool), "unused");
+  assert.equal(formatPoolTailLine({ ...KEY_PAYLOAD_SNAPSHOT, pool }), "400/1000 · unused");
+});
+
+test("formatPoolTailLine omits the spent segment when nothing is exhausted", () => {
+  const pool = derivePoolInfo({
+    items: [
+      { id: 1, alias: "a", total_quota: 10, used_quota: 2, last_used_at: "2026-10-10T02:37:35+08:00" },
+    ],
+  });
+  assert.ok(pool);
+  assert.equal(formatPoolTailLine({ ...KEY_PAYLOAD_SNAPSHOT, pool }), "400/1000 · last #1");
 });
 
 test("formatPoolDetailLines marks the last used row", () => {

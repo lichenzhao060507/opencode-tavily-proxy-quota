@@ -83,7 +83,7 @@ export function buildLines(state: ViewState, now: number = Date.now()): string[]
   // LOCAL FORK: append the per-key lines, but only when the proxy actually
   // served `/api/keys`. Both formatters return "" without pool detail and are
   // filtered out, so a stats-only proxy renders byte-identically to upstream.
-  for (const line of [formatPoolLine(snapshot.pool), formatPoolTailLine(snapshot.pool)]) {
+  for (const line of [formatPoolLine(snapshot.pool), formatPoolTailLine(snapshot)]) {
     if (line) lines.push(line);
   }
   return lines;
