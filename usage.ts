@@ -21,6 +21,16 @@ export const USAGE_URL = "https://api.tavily.com/usage";
  * `proxyUrl` option is set, instead of a single account's `/usage`.
  */
 export const PROXY_STATS_PATH = "/api/stats";
+/**
+ * LOCAL FORK: per-key breakdown.
+ *
+ * Not part of the upstream TavilyProxyManager contract the plugin targets --
+ * `/api/stats` is the documented surface and `/api/keys` is an extra this proxy
+ * happens to expose. Every caller must treat it as optional: a 404 (or any
+ * failure) degrades to "no pool detail" rather than an error, so the plugin
+ * still works against a proxy that only serves `/api/stats`.
+ */
+export const PROXY_KEYS_PATH = "/api/keys";
 export const DEFAULT_TIMEOUT_MS = 15_000;
 
 /**
@@ -85,6 +95,48 @@ export interface QuotaSnapshot {
   percentRemaining: number;
   /** Milliseconds since epoch when the snapshot was produced. */
   updatedAt: number;
+  /**
+   * LOCAL FORK: per-key breakdown, only present in `proxyUrl` mode and only
+   * when the proxy served `/api/keys`. Absent means "unknown", not "none".
+   */
+  pool?: PoolInfo;
+}
+
+/** LOCAL FORK: one pooled key as reported by `<proxyUrl>/api/keys`. */
+export interface PoolKey {
+  /** Stable numeric id assigned by the proxy. Rendered as `#<id>`. */
+  id: number;
+  /** Human label, e.g. `tavily-8`. May carry a `(exhausted)` suffix. */
+  alias: string;
+  /** Credits consumed by this key. */
+  used: number;
+  /** Credits included for this key. */
+  quota: number;
+  /** Proxy still schedules this key. */
+  active: boolean;
+  /** Proxy marked this key unusable (bad credentials, etc.). */
+  invalid: boolean;
+  /** Epoch ms of the last real Tavily call, or null if it has never been used. */
+  lastUsedAt: number | null;
+}
+
+/** LOCAL FORK: aggregate view over the pooled keys. */
+export interface PoolInfo {
+  keys: PoolKey[];
+  /** Keys in the pool. */
+  total: number;
+  /** Keys with no credits left. */
+  exhausted: number;
+  /** Keys still able to serve a request. */
+  live: number;
+  /**
+   * Most recently used key, or null when nothing has been used yet.
+   *
+   * This is "the key the last real call went through", NOT the proxy's internal
+   * rotation cursor -- the proxy exposes no such cursor. Say "last used", never
+   * "current".
+   */
+  lastUsed: PoolKey | null;
 }
 
 export type QuotaResult =
@@ -307,6 +359,76 @@ export function deriveProxySnapshot(
   };
 }
 
+/**
+ * LOCAL FORK: build the `<proxyUrl>/api/keys` URL, tolerating trailing slashes
+ * exactly like `proxyStatsUrl`.
+ */
+export function proxyKeysUrl(proxyUrl: string): string {
+  return `${proxyUrl.trim().replace(/\/+$/, "")}${PROXY_KEYS_PATH}`;
+}
+
+/** LOCAL FORK: one entry of `<proxyUrl>/api/keys` (every field optional). */
+export interface TavilyProxyKeysPayload {
+  items?: (Partial<PoolKey> & { total_quota?: number | null; used_quota?: number | null })[] | null;
+}
+
+/** Proxies report booleans as `true`/`false` or as SQLite's `1`/`0`. */
+function truthyFlag(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  return false;
+}
+
+function timestampOf(value: unknown): number | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * LOCAL FORK: derive the per-key pool view from a `/api/keys` payload.
+ *
+ * Returns `undefined` for anything that is not a usable key list, so callers can
+ * treat "no breakdown" as a normal outcome rather than an error.
+ */
+export function derivePoolInfo(payload: TavilyProxyKeysPayload): PoolInfo | undefined {
+  const items = payload?.items;
+  if (!Array.isArray(items) || items.length === 0) return undefined;
+
+  const keys: PoolKey[] = [];
+  for (const raw of items) {
+    if (!raw || typeof raw !== "object") continue;
+    const quota = finite(raw.total_quota ?? raw.quota);
+    const used = finite(raw.used_quota ?? raw.used);
+    if (quota === null && used === null) continue;
+    keys.push({
+      id: finite(raw.id) ?? -1,
+      alias: typeof raw.alias === "string" && raw.alias.trim() ? raw.alias.trim() : `key ${raw.id}`,
+      used: used ?? 0,
+      quota: quota ?? 0,
+      active: truthyFlag(raw.is_active ?? raw.active),
+      invalid: truthyFlag(raw.is_invalid ?? raw.invalid),
+      lastUsedAt: timestampOf(raw.last_used_at ?? raw.lastUsedAt),
+    });
+  }
+  if (keys.length === 0) return undefined;
+
+  // Oldest first so the sidebar reads key 1 -> key 9 top to bottom.
+  keys.sort((a, b) => a.id - b.id);
+
+  const exhausted = keys.filter((key) => key.quota > 0 && key.used >= key.quota).length;
+  const live = keys.filter((key) => !key.invalid && key.quota > 0 && key.used < key.quota).length;
+
+  // "Last used" is the newest `last_used_at`. Keys never used sort last.
+  let lastUsed: PoolKey | null = null;
+  for (const key of keys) {
+    if (key.lastUsedAt === null) continue;
+    if (lastUsed === null || key.lastUsedAt > lastUsed.lastUsedAt) lastUsed = key;
+  }
+
+  return { keys, total: keys.length, exhausted, live, lastUsed };
+}
+
 /** Format a remaining percentage for the sidebar. */
 export function formatPercent(percentRemaining: number): string {
   const clamped = Math.max(0, Math.min(100, percentRemaining));
@@ -339,6 +461,87 @@ export function formatQuotaLine(
 /** Format the headline line, e.g. `839 credits left`. */
 export function formatRemaining(snapshot: QuotaSnapshot): string {
   return `${snapshot.remaining} credits left`;
+}
+
+/* ------------------------------------------------------------------ *
+ * LOCAL FORK: pool rendering.
+ *
+ * The sidebar is 36 columns. `DEFAULT_BAR_WIDTH` (25) plus the 2-space
+ * separator plus the 9-char percent column already fills it exactly, so the
+ * pool bar reuses both widths to stay flush with the quota bar above it.
+ * ------------------------------------------------------------------ */
+
+/** Fill char for the per-key bar, so it never reads as the credit bar. */
+const POOL_FILL = "▓";
+
+/** `#8` from a key id. */
+function keyTag(key: PoolKey): string {
+  return `#${key.id}`;
+}
+
+/**
+ * LOCAL FORK: the per-key bar line, e.g.
+ * `[███████▓▓▓░░░░░░░░░░░░░░░]  8/9 keys`.
+ *
+ * One cell is roughly one key; filled cells are keys that can still serve a
+ * request. Returns an empty string when there is no pool detail, so callers can
+ * filter it out.
+ */
+export function formatPoolLine(pool: PoolInfo | undefined, width = DEFAULT_BAR_WIDTH): string {
+  if (!pool || pool.total === 0) return "";
+  const safeWidth = Math.max(1, Math.floor(width));
+  const filled = Math.round((pool.live / pool.total) * safeWidth);
+  const bar = POOL_FILL.repeat(filled) + "░".repeat(Math.max(0, safeWidth - filled));
+  const label = `${pool.live}/${pool.total} keys`;
+  return `${bar}${BAR_SEPARATOR}${label.padStart(PERCENT_COLUMN_WIDTH)}`;
+}
+
+/**
+ * LOCAL FORK: the line under the pool bar, e.g. `last #8 · 1 spent`.
+ *
+ * Wording is deliberate: the proxy exposes no rotation cursor, so this reports
+ * the last key a real call went through, not a "current" one. The reset
+ * countdown is deliberately omitted -- `formatResetLine` already sits above the
+ * quota bar and repeating it here would just burn sidebar width.
+ */
+export function formatPoolTailLine(pool: PoolInfo | undefined): string {
+  if (!pool || pool.total === 0) return "";
+  const parts: string[] = [];
+  if (pool.lastUsed) parts.push(`last ${keyTag(pool.lastUsed)}`);
+  else parts.push("unused");
+  if (pool.exhausted > 0) parts.push(`${pool.exhausted} spent`);
+  return parts.join(" · ");
+}
+
+/** LOCAL FORK: one per-key row for the `/tavily-quota` detail view. */
+export function formatPoolKeyLine(key: PoolKey, width = 10): string {
+  const safeWidth = Math.max(1, Math.floor(width));
+  const percent = key.quota > 0 ? (key.used / key.quota) * 100 : 0;
+  const filled = Math.round((percent / 100) * safeWidth);
+  const bar = POOL_FILL.repeat(Math.min(safeWidth, filled)) + "░".repeat(Math.max(0, safeWidth - filled));
+  const amounts = `${key.used}/${key.quota}`;
+  const spent = key.quota > 0 && key.used >= key.quota;
+  const tags = [spent ? "spent" : key.invalid ? "invalid" : null].filter(Boolean).join(" ");
+  const tail = `${amounts}${tags ? `  ${tags}` : ""}`;
+  return `${keyTag(key).padStart(3)} ${bar}  ${tail}`;
+}
+
+/**
+ * LOCAL FORK: the multi-line breakdown shown by `/tavily-quota`.
+ *
+ * Falls back to the single-line summary when the proxy did not serve
+ * `/api/keys`, so the command still works against a stats-only proxy.
+ */
+export function formatPoolDetailLines(snapshot: QuotaSnapshot, now: number = Date.now()): string[] {
+  const head = `${snapshot.remaining}/${snapshot.limit} left · ${formatPercent(snapshot.percentRemaining)} · resets in ${formatResetCountdown(nextMonthlyResetAt(now), now)}`;
+  const pool = snapshot.pool;
+  if (!pool || pool.total === 0) return [head];
+
+  const rows = pool.keys.map((key) => {
+    const line = formatPoolKeyLine(key);
+    return pool.lastUsed?.id === key.id ? `${line}  <- last` : line;
+  });
+  return [head, `${pool.live}/${pool.total} keys live · ${pool.exhausted} spent`, "─".repeat(28), ...rows];
 }
 
 const MS_PER_MINUTE = 60_000;
@@ -441,7 +644,40 @@ export async function fetchQuota(options: FetchQuotaOptions = {}): Promise<Quota
     return { ok: false, message: `invalid JSON from ${endpointLabel}` };
   }
 
-  return proxyUrl
+  const derived = proxyUrl
     ? deriveProxySnapshot(payload as TavilyProxyStatsPayload, options.now)
     : deriveSnapshot(payload as TavilyUsagePayload, options.now);
+
+  // LOCAL FORK: enrich proxy mode with the per-key breakdown.
+  //
+  // Every failure mode is swallowed on purpose. `/api/keys` is not part of the
+  // upstream proxy contract, so a 404, an auth rejection or a timeout must leave
+  // the headline quota intact rather than replace a working sidebar with an
+  // error -- the breakdown is an extra, not a requirement.
+  if (!derived.ok || !proxyUrl) return derived;
+
+  const pool = await fetchPoolInfo(proxyUrl, key, options);
+  return pool ? { ok: true, snapshot: { ...derived.snapshot, pool } } : derived;
+}
+
+/**
+ * LOCAL FORK: best-effort `<proxyUrl>/api/keys` read. Returns `undefined` for
+ * every failure, including a proxy that does not implement the endpoint.
+ */
+async function fetchPoolInfo(
+  proxyUrl: string,
+  key: string,
+  options: FetchQuotaOptions,
+): Promise<PoolInfo | undefined> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  try {
+    const response = await fetchImpl(proxyKeysUrl(proxyUrl), {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+    });
+    if (!response.ok) return undefined;
+    return derivePoolInfo((await response.json()) as TavilyProxyKeysPayload);
+  } catch {
+    return undefined;
+  }
 }

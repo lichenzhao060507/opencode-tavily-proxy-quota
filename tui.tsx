@@ -23,9 +23,10 @@ import { Plugin } from "@opencode/plugin/tui";
 import { createSignal } from "solid-js";
 import {
   fetchQuotaWithFallback,
-  formatPercent,
+  formatPoolDetailLines,
+  formatPoolLine,
+  formatPoolTailLine,
   formatQuotaLine,
-  formatRemaining,
   formatResetLine,
   type QuotaSnapshot,
 } from "./usage";
@@ -78,7 +79,14 @@ export function buildLines(state: ViewState, now: number = Date.now()): string[]
   const snapshot = state.snapshot;
   // Reset countdown sits between the heading and the bar, matching the sidebar
   // order used by the built-in quota section.
-  return [formatResetLine(now), formatQuotaLine(snapshot)];
+  const lines = [formatResetLine(now), formatQuotaLine(snapshot)];
+  // LOCAL FORK: append the per-key lines, but only when the proxy actually
+  // served `/api/keys`. Both formatters return "" without pool detail and are
+  // filtered out, so a stats-only proxy renders byte-identically to upstream.
+  for (const line of [formatPoolLine(snapshot.pool), formatPoolTailLine(snapshot.pool)]) {
+    if (line) lines.push(line);
+  }
+  return lines;
 }
 
 function TavilyQuotaSidebar(props: { context: Context; state: () => ViewState }) {
@@ -117,9 +125,11 @@ function TavilyQuotaCommands(props: {
         slash: { name: "tavily-quota" },
         run: async () => {
           const next = await props.refresh();
+          // LOCAL FORK: multi-line breakdown. Falls back to the original
+          // one-line summary when the proxy served no `/api/keys`.
           const message =
             next.status === "ready"
-              ? `${formatRemaining(next.snapshot)} · ${formatPercent(next.snapshot.percentRemaining)} · ${formatResetLine()}`
+              ? formatPoolDetailLines(next.snapshot).join("\n")
               : next.status === "error"
                 ? next.message
                 : "still loading…";

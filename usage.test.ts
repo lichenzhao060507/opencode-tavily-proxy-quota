@@ -8,23 +8,72 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  derivePoolInfo,
   deriveProxySnapshot,
   deriveSnapshot,
   expandOptionValue,
   fetchQuota,
   fetchQuotaWithFallback,
   formatPercent,
+  formatPoolDetailLines,
+  formatPoolLine,
+  formatPoolTailLine,
   formatQuotaLine,
   formatRemaining,
   formatResetCountdown,
   formatResetLine,
   nextMonthlyResetAt,
   progressBar,
+  PROXY_KEYS_PATH,
   PROXY_STATS_PATH,
+  proxyKeysUrl,
   proxyStatsUrl,
   resolveApiKey,
   SIDEBAR_WIDTH,
 } from "./usage.ts";
+
+/** LOCAL FORK: a three-key pool fixture mirroring the proxy's /api/keys shape. */
+const PROXY_KEYS = {
+  items: [
+    {
+      id: 1,
+      alias: "tavily-1 (exhausted)",
+      total_quota: 1000,
+      used_quota: 1000,
+      is_active: 0,
+      is_invalid: 0,
+      last_used_at: "2026-10-08T16:09:01+08:00",
+    },
+    {
+      id: 2,
+      alias: "tavily-2",
+      total_quota: 1000,
+      used_quota: 227,
+      is_active: 1,
+      is_invalid: 0,
+      last_used_at: "2026-10-10T02:37:35+08:00",
+    },
+    {
+      id: 3,
+      alias: "tavily-3",
+      total_quota: 1000,
+      used_quota: 0,
+      is_active: 1,
+      is_invalid: 0,
+      last_used_at: null,
+    },
+  ],
+};
+
+/** LOCAL FORK: a snapshot stub for formatter tests. */
+const KEY_PAYLOAD_SNAPSHOT = {
+  planName: "Researcher",
+  used: 600,
+  limit: 1000,
+  remaining: 400,
+  percentRemaining: 40,
+  updatedAt: 0,
+};
 
 const KEY_PAYLOAD = {
   key: { usage: 161, limit: null, search_usage: 158 },
@@ -430,23 +479,165 @@ test("deriveProxySnapshot clamps remaining at zero and errors without a pool quo
 });
 
 test("fetchQuota reads the proxy pool when proxyUrl is set", async () => {
-  let url: unknown = null;
-  let authorization: string | null = null;
+  // LOCAL FORK: fetchQuota now makes a second, best-effort call to /api/keys.
+  // Record every request instead of just the last one, so this still asserts
+  // "stats first, then keys" rather than whichever call happened to be last.
+  const urls: string[] = [];
+  const authorizations: (string | null)[] = [];
   const result = await fetchQuota({
     env: {},
     apiKey: "master-key",
     proxyUrl: "http://127.0.0.1:27890/",
     now: 7,
     fetchImpl: (async (input: unknown, init?: RequestInit) => {
-      url = input;
-      authorization = new Headers(init?.headers).get("authorization");
+      urls.push(String(input));
+      authorizations.push(new Headers(init?.headers).get("authorization"));
+      // Only /api/stats has stats; /api/keys is absent on this proxy.
+      return String(input).endsWith(PROXY_KEYS_PATH)
+        ? jsonResponse({ error: "not found" }, 404)
+        : jsonResponse(PROXY_STATS);
+    }) as typeof fetch,
+  });
+  assert.deepEqual(urls, [
+    `http://127.0.0.1:27890${PROXY_STATS_PATH}`,
+    `http://127.0.0.1:27890${PROXY_KEYS_PATH}`,
+  ]);
+  assert.deepEqual(authorizations, ["Bearer master-key", "Bearer master-key"]);
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.snapshot.remaining, 4843);
+});
+
+test("fetchQuota attaches the per-key pool when the proxy serves /api/keys", async () => {
+  const result = await fetchQuota({
+    env: {},
+    apiKey: "master-key",
+    proxyUrl: "http://127.0.0.1:27890",
+    now: 7,
+    fetchImpl: (async (input: unknown) =>
+      String(input).endsWith(PROXY_KEYS_PATH)
+        ? jsonResponse(PROXY_KEYS)
+        : jsonResponse(PROXY_STATS)) as typeof fetch,
+  });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  const pool = result.snapshot.pool;
+  assert.ok(pool, "pool detail should be attached");
+  assert.equal(pool.total, 3);
+  assert.equal(pool.exhausted, 1);
+  assert.equal(pool.live, 2);
+  assert.equal(pool.lastUsed?.id, 2);
+});
+
+test("fetchQuota degrades to no pool detail when /api/keys 404s", async () => {
+  const result = await fetchQuota({
+    env: {},
+    apiKey: "master-key",
+    proxyUrl: "http://127.0.0.1:27890",
+    now: 7,
+    fetchImpl: (async (input: unknown) =>
+      String(input).endsWith(PROXY_KEYS_PATH)
+        ? jsonResponse({ error: "not found" }, 404)
+        : jsonResponse(PROXY_STATS)) as typeof fetch,
+  });
+  // A stats-only proxy must still render the headline quota.
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.snapshot.pool, undefined);
+});
+
+test("fetchQuota degrades to no pool detail when /api/keys throws", async () => {
+  const result = await fetchQuota({
+    env: {},
+    apiKey: "master-key",
+    proxyUrl: "http://127.0.0.1:27890",
+    now: 7,
+    fetchImpl: (async (input: unknown) => {
+      if (String(input).endsWith(PROXY_KEYS_PATH)) throw new Error("socket hang up");
       return jsonResponse(PROXY_STATS);
     }) as typeof fetch,
   });
-  assert.equal(url, `http://127.0.0.1:27890${PROXY_STATS_PATH}`);
-  assert.equal(authorization, "Bearer master-key");
   assert.equal(result.ok, true);
-  if (result.ok) assert.equal(result.snapshot.remaining, 4843);
+  if (result.ok) assert.equal(result.snapshot.pool, undefined);
+});
+
+test("derivePoolInfo counts exhausted and live keys and finds the last used", () => {
+  const pool = derivePoolInfo(PROXY_KEYS);
+  assert.ok(pool);
+  assert.equal(pool.keys.length, 3);
+  assert.equal(pool.exhausted, 1);
+  assert.equal(pool.live, 2);
+  assert.equal(pool.lastUsed?.id, 2);
+  // Oldest id first, so the sidebar reads top to bottom.
+  assert.deepEqual(pool.keys.map((k) => k.id), [1, 2, 3]);
+});
+
+test("derivePoolInfo returns undefined for anything unusable", () => {
+  assert.equal(derivePoolInfo({}), undefined);
+  assert.equal(derivePoolInfo({ items: [] }), undefined);
+  assert.equal(derivePoolInfo({ items: null }), undefined);
+  // Entries with neither quota nor usage carry no signal.
+  assert.equal(derivePoolInfo({ items: [{ id: 1, alias: "x" }] }), undefined);
+});
+
+test("derivePoolInfo accepts SQLite 0/1 flags and boolean flags alike", () => {
+  const numeric = derivePoolInfo({
+    items: [
+      { id: 1, alias: "a", total_quota: 10, used_quota: 10, is_active: 0, is_invalid: 0 },
+      { id: 2, alias: "b", total_quota: 10, used_quota: 1, is_active: 1, is_invalid: 0 },
+    ],
+  });
+  assert.ok(numeric);
+  assert.equal(numeric.live, 1);
+  assert.equal(numeric.exhausted, 1);
+
+  const boolish = derivePoolInfo({
+    items: [
+      { id: 1, alias: "a", total_quota: 10, used_quota: 10, is_active: false, is_invalid: false },
+      { id: 2, alias: "b", total_quota: 10, used_quota: 1, is_active: true, is_invalid: false },
+    ],
+  });
+  assert.deepEqual(boolish?.live, numeric?.live);
+  assert.deepEqual(boolish?.exhausted, numeric?.exhausted);
+});
+
+test("formatPoolLine renders an empty string without pool detail", () => {
+  assert.equal(formatPoolLine(undefined), "");
+  assert.equal(formatPoolTailLine(undefined), "");
+  // A stats-only proxy falls back to the original one-line summary.
+  assert.deepEqual(formatPoolDetailLines({ ...KEY_PAYLOAD_SNAPSHOT }, Date.UTC(2026, 9, 10)), [
+    "400/1000 left · 40% · resets in 22d 0h",
+  ]);
+});
+
+test("formatPoolLine stays within the sidebar width", () => {
+  const pool = derivePoolInfo(PROXY_KEYS);
+  assert.ok(pool);
+  const line = formatPoolLine(pool);
+  assert.equal(line.length, SIDEBAR_WIDTH);
+  assert.match(line, /8\/9|2\/3|2\/3 keys$/);
+});
+
+test("formatPoolTailLine reports the last used key and the spent count", () => {
+  const pool = derivePoolInfo(PROXY_KEYS);
+  assert.ok(pool);
+  assert.equal(formatPoolTailLine(pool), "last #2 · 1 spent");
+});
+
+test("formatPoolTailLine says unused when no key has been called", () => {
+  const pool = derivePoolInfo({
+    items: [{ id: 1, alias: "a", total_quota: 10, used_quota: 0, last_used_at: null }],
+  });
+  assert.ok(pool);
+  assert.equal(pool.lastUsed, null);
+  assert.equal(formatPoolTailLine(pool), "unused");
+});
+
+test("formatPoolDetailLines marks the last used row", () => {
+  const pool = derivePoolInfo(PROXY_KEYS);
+  assert.ok(pool);
+  const lines = formatPoolDetailLines({ ...KEY_PAYLOAD_SNAPSHOT, pool }, Date.UTC(2026, 0, 1));
+  const last = lines.filter((l) => l.includes("<- last"));
+  assert.equal(last.length, 1);
+  assert.match(last[0], /#2/);
 });
 
 test("fetchQuota reports a missing proxy master key without calling fetch", async () => {
