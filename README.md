@@ -7,8 +7,6 @@
 An OpenCode 2 TUI plugin that shows the remaining Tavily API credits in the
 session sidebar.
 
-![Tavily quota sidebar: reset countdown, monthly credits bar, pool bar, and last-used key](./assets/sidebar.png)
-
 ## Lineage
 
 This is a fork of a fork:
@@ -27,7 +25,7 @@ section, so the two line up):
 
 ```
 Tavily
-刷新额度  距重置 5天16小时
+ 刷新额度   详情   距重置 5天12小时
 ████████░░░░░░░░░░░░░░░░░   32% 剩余
 ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░   16/19 个
 6143/19000 · 最后 #19 · 3 个耗尽
