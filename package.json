@@ -34,12 +34,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/54cwh/opencode-tavily-proxy-quota.git"
+    "url": "git+https://github.com/lichenzhao060507/opencode-tavily-proxy-quota.git"
   },
   "bugs": {
-    "url": "https://github.com/54cwh/opencode-tavily-proxy-quota/issues"
+    "url": "https://github.com/lichenzhao060507/opencode-tavily-proxy-quota/issues"
   },
-  "homepage": "https://github.com/54cwh/opencode-tavily-proxy-quota#readme",
+  "homepage": "https://github.com/lichenzhao060507/opencode-tavily-proxy-quota#readme",
   "dependencies": {
     "@opencode/plugin": "^2.0.7",
     "@opentui/core": "^0.5.11",
