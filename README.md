@@ -7,6 +7,8 @@
 An OpenCode 2 TUI plugin that shows the remaining Tavily API credits in the
 session sidebar.
 
+![Tavily quota sidebar: reset countdown, monthly credits bar, pool bar, and last-used key](./assets/sidebar.png)
+
 ## Lineage
 
 This is a fork of a fork:
@@ -19,6 +21,9 @@ This is a fork of a fork:
 
 Without `proxyUrl` it behaves exactly like the original: one account's credits
 from `api.tavily.com/usage`.
+
+The same sidebar as text (the bar widths match OpenCode's built-in quota
+section, so the two line up):
 
 ```
 Tavily
