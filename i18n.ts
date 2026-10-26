@@ -28,6 +28,8 @@ export interface Messages {
   quotaLeft(percent: string): string;
   /** `839 credits left` */
   creditsLeft(remaining: number): string;
+  /** `可用 6085/19000` — the tail line's leading figure. */
+  creditsAvailable(remaining: number, limit: number): string;
   /** `16/19 keys` */
   keysFraction(live: number, total: number): string;
   /** `last #8` */
@@ -96,6 +98,7 @@ const ZH: Messages = {
 
   quotaLeft: (percent) => `${percent} 剩余`,
   creditsLeft: (remaining) => `剩余 ${remaining} 额度`,
+  creditsAvailable: (remaining, limit) => `可用${remaining}/${limit}`,
   keysFraction: (live, total) => `${live}/${total} 个`,
   lastUsed: (tag) => `最后 ${tag}`,
   unused: "未使用",
@@ -158,6 +161,7 @@ const EN: Messages = {
 
   quotaLeft: (percent) => `${percent} left`,
   creditsLeft: (remaining) => `${remaining} credits left`,
+  creditsAvailable: (remaining, limit) => `${remaining}/${limit} left`,
   keysFraction: (live, total) => `${live}/${total} keys`,
   lastUsed: (tag) => `last ${tag}`,
   unused: "unused",

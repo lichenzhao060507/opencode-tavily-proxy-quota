@@ -847,11 +847,13 @@ test("formatPoolTailLine leads with absolute credits, then last used and spent",
   const pool = derivePoolInfo(PROXY_KEYS);
   assert.ok(pool);
   const line = formatPoolTailLine({ ...KEY_PAYLOAD_SNAPSHOT, pool });
-  assert.equal(line, "400/1000 · 最后 #2 · 1 个耗尽");
-  // Headroom matters: the totals widen as keys are added, and the sidebar is 36.
+  assert.equal(line, "可用400/1000 · 最后 #2 · 1 个耗尽");
+  // The `可用` label consumed the old 3-column headroom, so this now sits right
+  // at the sidebar edge. Keep the hard limit asserted: going over means clipped
+  // text, which is worse than dropping the label again.
   assert.ok(
-    displayWidth(line) <= SIDEBAR_WIDTH - 3,
-    `line is ${displayWidth(line)} cols, too wide to grow`,
+    displayWidth(line) <= SIDEBAR_WIDTH,
+    `line is ${displayWidth(line)} cols, wider than the ${SIDEBAR_WIDTH}-column sidebar`,
   );
 });
 
@@ -861,7 +863,7 @@ test("formatPoolTailLine says unused when no key has been called", () => {
   });
   assert.ok(pool);
   assert.equal(pool.lastUsed, null);
-  assert.equal(formatPoolTailLine({ ...KEY_PAYLOAD_SNAPSHOT, pool }), "400/1000 · 未使用");
+  assert.equal(formatPoolTailLine({ ...KEY_PAYLOAD_SNAPSHOT, pool }), "可用400/1000 · 未使用");
 });
 
 test("formatPoolTailLine omits the spent segment when nothing is exhausted", () => {
@@ -871,7 +873,26 @@ test("formatPoolTailLine omits the spent segment when nothing is exhausted", () 
     ],
   });
   assert.ok(pool);
-  assert.equal(formatPoolTailLine({ ...KEY_PAYLOAD_SNAPSHOT, pool }), "400/1000 · 最后 #1");
+  assert.equal(formatPoolTailLine({ ...KEY_PAYLOAD_SNAPSHOT, pool }), "可用400/1000 · 最后 #1");
+});
+
+test("formatPoolTailLine stays inside the sidebar for a 19-key pool in both locales", () => {
+  const items = Array.from({ length: 19 }, (_, i) => ({
+    id: i + 1,
+    alias: `tavily-${i + 1}`,
+    total_quota: 1000,
+    used_quota: i < 3 ? 1000 : 600,
+    last_used_at: i === 18 ? "2026-10-26T15:00:00+08:00" : null,
+  }));
+  const pool = derivePoolInfo({ items });
+  assert.ok(pool);
+  const snapshot = { ...KEY_PAYLOAD_SNAPSHOT, remaining: 6085, limit: 19000, pool };
+  const zh = formatPoolTailLine(snapshot, "zh");
+  assert.equal(zh, "可用6085/19000 · 最后 #19 · 3 个耗尽");
+  assert.ok(displayWidth(zh) <= SIDEBAR_WIDTH, `zh tail is ${displayWidth(zh)} cols`);
+  const en = formatPoolTailLine(snapshot, "en");
+  assert.equal(en, "6085/19000 left · last #19 · 3 spent");
+  assert.ok(displayWidth(en) <= SIDEBAR_WIDTH, `en tail is ${displayWidth(en)} cols`);
 });
 
 test("formatPoolDetailLines marks the last used row", () => {

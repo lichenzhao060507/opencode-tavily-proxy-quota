@@ -28,7 +28,7 @@ Tavily
  刷新额度   详情   距重置 5天12小时
 ████████░░░░░░░░░░░░░░░░░   32% 剩余
 ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░   16/19 个
-6143/19000 · 最后 #19 · 3 个耗尽
+可用6143/19000 · 最后 #19 · 3 个耗尽
 ```
 
 The first bar is monthly credits left; the second counts keys in the proxy pool
@@ -43,7 +43,7 @@ Tavily
  Refresh  Details  reset 5d 12h
 ████████░░░░░░░░░░░░░░░░    32% left
 ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░  16/19 keys
-6143/19000 · last #19 · 3 spent
+6143/19000 left · last #19 · 3 spent
 ```
 
 
@@ -160,7 +160,7 @@ Tavily
  Refresh  Details  reset 5d 12h
 ████████░░░░░░░░░░░░░░░░    32% left
 ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░  16/19 keys
-6143/19000 · last #19 · 3 spent
+6143/19000 left · last #19 · 3 spent
 ```
 
 ### Buttons

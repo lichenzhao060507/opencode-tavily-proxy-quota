@@ -6,6 +6,16 @@ upstream package version until this fork diverges meaningfully.
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-10-26
+
+### Changed
+
+- The sidebar's bottom line now labels its leading figure: `可用6085/19000 ·
+  最后 #19 · 3 个耗尽` instead of a bare `6085/19000`. English uses
+  `6085/19000 left` to match the `32% left` bar above and stay within 36
+  columns. The label consumes the 3-column headroom that line had; a test now
+  asserts it against the sidebar width exactly, in both locales.
+
 ## [1.3.0] — 2026-10-26
 
 ### Added

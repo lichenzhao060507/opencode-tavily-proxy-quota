@@ -768,7 +768,7 @@ export function formatPoolTailLine(snapshot: QuotaSnapshot, locale: Locale = "zh
   const m = messages(locale);
   const pool = snapshot.pool;
   if (!pool || pool.total === 0) return "";
-  const parts: string[] = [`${snapshot.remaining}/${snapshot.limit}`];
+  const parts: string[] = [m.creditsAvailable(snapshot.remaining, snapshot.limit)];
   if (pool.lastUsed) parts.push(m.lastUsed(keyTag(pool.lastUsed)));
   else parts.push(m.unused);
   if (pool.exhausted > 0) parts.push(m.exhaustedCount(pool.exhausted));
