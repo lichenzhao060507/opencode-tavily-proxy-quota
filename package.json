@@ -1,4 +1,4 @@
-﻿{
+{
   "$schema": "https://json.schemastore.org/package.json",
   "name": "opencode-tavily-proxy-quota",
   "version": "1.2.0",
@@ -47,12 +47,12 @@
     "solid-js": "1.9.12"
   },
   "devDependencies": {
-    "@babel/core": "^7.28.0",
-    "@babel/preset-typescript": "^7.27.1",
-    "@types/node": "^22.0.0",
-    "babel-preset-solid": "^1.9.12",
-    "tsx": "^4.20.0",
-    "typescript": "^5.6.0"
+    "@babel/core": "^7.29.7",
+    "@babel/preset-typescript": "^8.0.7",
+    "@types/node": "^26.6.5",
+    "babel-preset-solid": "^1.9.16",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
   },
   "engines": {
     "node": ">=22.0.0"
