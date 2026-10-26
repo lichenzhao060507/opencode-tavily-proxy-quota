@@ -22,7 +22,7 @@ export default Plugin.define({
             ? process.env[connection.name]
             : undefined;
         if (!key) {
-          return { ok: false, message: "no active Tavily connection (run opencode auth login tavily)" };
+          return { ok: false, message: "没有可用的 Tavily 连接（请先运行 opencode auth login tavily）" };
         }
         return fetchQuota({ apiKey: key, env: {} });
       },

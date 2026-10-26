@@ -65,6 +65,6 @@ test("server RPC does not query Tavily when no active connection exists", async 
   assert.ok(handler);
   assert.deepEqual(await handler(), {
     ok: false,
-    message: "no active Tavily connection (run opencode auth login tavily)",
+    message: "没有可用的 Tavily 连接（请先运行 opencode auth login tavily）",
   });
 });

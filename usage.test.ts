@@ -5,12 +5,14 @@
  */
 
 import assert from "node:assert/strict";
+import { join, resolve as resolvePath } from "node:path";
 import { test } from "node:test";
 
 import {
   derivePoolInfo,
   deriveProxySnapshot,
   deriveSnapshot,
+  displayWidth,
   expandOptionValue,
   fetchQuota,
   fetchQuotaWithFallback,
@@ -26,10 +28,13 @@ import {
   progressBar,
   PROXY_KEYS_PATH,
   PROXY_STATS_PATH,
+  PROXY_SYNC_PATH,
   proxyKeysUrl,
   proxyStatsUrl,
+  proxySyncUrl,
   resolveApiKey,
   SIDEBAR_WIDTH,
+  syncProxyUsage,
 } from "./usage.ts";
 
 /** LOCAL FORK: a three-key pool fixture mirroring the proxy's /api/keys shape. */
@@ -139,7 +144,7 @@ test("formatPercent and formatRemaining render sidebar text", () => {
       percentRemaining: 83.9,
       updatedAt: 0,
     }),
-    "839 credits left",
+    "剩余 839 额度",
   );
 });
 
@@ -163,9 +168,9 @@ test("formatQuotaLine matches the quota section's bar width on one line", () => 
 
   const line = formatQuotaLine(snapshot);
   // 25-char bar (the quota section's 36-column sidebar leaves 25 after its
-  // separator and 9-char percent column), then a right-aligned `84% left`.
-  assert.equal(line, "█████████████████████░░░░   84% left");
-  assert.equal(line.length, SIDEBAR_WIDTH);
+  // separator and 9-cell percent column), then a right-aligned `84% 剩余`.
+  assert.equal(line, "█████████████████████░░░░   84% 剩余");
+  assert.equal(displayWidth(line), SIDEBAR_WIDTH);
 
   // An explicit width still controls the bar length.
   assert.ok(formatQuotaLine(snapshot, 4).startsWith(progressBar(83.9, 4)));
@@ -180,8 +185,8 @@ test("formatQuotaLine keeps a full label inside the percent column", () => {
     percentRemaining: 100,
     updatedAt: 0,
   });
-  assert.ok(line.endsWith("100% left"));
-  assert.equal(line.length, SIDEBAR_WIDTH);
+  assert.ok(line.endsWith("100% 剩余"));
+  assert.equal(displayWidth(line), SIDEBAR_WIDTH);
 });
 
 test("nextMonthlyResetAt is 00:00 UTC on the 1st of the next month", () => {
@@ -197,32 +202,32 @@ test("nextMonthlyResetAt rolls over the year boundary", () => {
 test("formatResetCountdown reports days and hours", () => {
   const now = Date.UTC(2026, 8, 24, 12, 0); // Sep 24 2026, 12:00 UTC
   const resetAt = Date.UTC(2026, 9, 1);
-  assert.equal(formatResetCountdown(resetAt, now), "6d 12h");
+  assert.equal(formatResetCountdown(resetAt, now), "6天12小时");
 });
 
 test("formatResetCountdown drops to hours and minutes in the last day", () => {
   const resetAt = Date.UTC(2026, 9, 1);
-  assert.equal(formatResetCountdown(resetAt, resetAt - (5 * 3_600_000 + 12 * 60_000)), "5h 12m");
-  assert.equal(formatResetCountdown(resetAt, resetAt - 45 * 60_000), "45m");
-  // A sub-minute remainder still reads as `1m` rather than `0m`.
-  assert.equal(formatResetCountdown(resetAt, resetAt - 30_000), "1m");
+  assert.equal(formatResetCountdown(resetAt, resetAt - (5 * 3_600_000 + 12 * 60_000)), "5小时12分");
+  assert.equal(formatResetCountdown(resetAt, resetAt - 45 * 60_000), "45分");
+  // A sub-minute remainder still reads as `1分` rather than `0分`.
+  assert.equal(formatResetCountdown(resetAt, resetAt - 30_000), "1分");
 });
 
 test("formatResetCountdown floors instead of overstating the time left", () => {
   const resetAt = Date.UTC(2026, 9, 1);
   const now = resetAt - (6 * 86_400_000 + 12 * 3_600_000 + 59 * 60_000 + 59_000);
-  assert.equal(formatResetCountdown(resetAt, now), "6d 12h");
+  assert.equal(formatResetCountdown(resetAt, now), "6天12小时");
 });
 
-test("formatResetCountdown reports 0m at or past the reset", () => {
+test("formatResetCountdown reports 0分 at or past the reset", () => {
   const resetAt = Date.UTC(2026, 9, 1);
-  assert.equal(formatResetCountdown(resetAt, resetAt), "0m");
-  assert.equal(formatResetCountdown(resetAt, resetAt + 1_000), "0m");
+  assert.equal(formatResetCountdown(resetAt, resetAt), "0分");
+  assert.equal(formatResetCountdown(resetAt, resetAt + 1_000), "0分");
 });
 
 test("formatResetLine renders the sidebar countdown", () => {
   const now = Date.UTC(2026, 8, 24, 12, 0); // Sep 24 2026, 12:00 UTC
-  assert.equal(formatResetLine(now), "resets in 6d 12h");
+  assert.equal(formatResetLine(now), "距重置 6天12小时");
 });
 
 test("resolveApiKey prefers the environment and falls back to the plugin option", () => {
@@ -251,7 +256,7 @@ test("expandOptionValue expands ~/ against the home directory", () => {
     return "k";
   };
   assert.equal(expandOptionValue("{file:~/.secrets/key}", { readFile, home: "/home/me" }), "k");
-  assert.deepEqual(seen, ["/home/me/.secrets/key"]);
+  assert.deepEqual(seen, [join("/home/me", ".secrets/key")]);
 });
 
 test("expandOptionValue resolves relative file references against cwd", () => {
@@ -261,7 +266,7 @@ test("expandOptionValue resolves relative file references against cwd", () => {
     return "k";
   };
   assert.equal(expandOptionValue("{file:.secrets/key}", { readFile, cwd: "/work" }), "k");
-  assert.deepEqual(seen, ["/work/.secrets/key"]);
+  assert.deepEqual(seen, [resolvePath("/work", ".secrets/key")]);
 });
 
 test("expandOptionValue expands multiple references in one value", () => {
@@ -280,7 +285,7 @@ test("expandOptionValue reports an unreadable file reference", () => {
           throw new Error("ENOENT");
         },
       }),
-    /bad file reference: "\{file:\/nope\}" \(\/nope\)/,
+    /无法读取文件引用："\{file:\/nope\}"（\/nope）/,
   );
 });
 
@@ -290,6 +295,57 @@ test("resolveApiKey expands references in the plugin option", () => {
   assert.equal(resolveApiKey({ KEY: "from-env" }, "{env:KEY}"), "from-env");
   // `TAVILY_API_KEY` still wins over an option reference.
   assert.equal(resolveApiKey({ TAVILY_API_KEY: "direct" }, "{file:/k}", { readFile }), "direct");
+});
+
+test("resolveApiKey lets the pooled master key win over TAVILY_API_KEY", () => {
+  // Regression guard: with `proxyUrl` set, `apiKey` is the proxy master key and
+  // `TAVILY_API_KEY` is a raw tvly- key. The raw key must not be sent to the
+  // proxy, which answers 401.
+  assert.equal(
+    resolveApiKey({ TAVILY_API_KEY: "raw-tvly-key" }, "master-key", { pooled: true }),
+    "master-key",
+  );
+  // Direct (non-pooled) use is unchanged.
+  assert.equal(
+    resolveApiKey({ TAVILY_API_KEY: "raw-tvly-key" }, "master-key", { pooled: false }),
+    "raw-tvly-key",
+  );
+});
+
+test("fetchQuotaWithFallback sends the master key, never TAVILY_API_KEY, in proxy mode", async () => {
+  let authorization: string | null = null;
+  const result = await fetchQuotaWithFallback({
+    env: { TAVILY_API_KEY: "raw-tvly-key" },
+    apiKey: "master-key",
+    proxyUrl: "http://127.0.0.1:27890",
+    remote: async () => ({ ok: false as const, message: "unused" }),
+    fetchImpl: (async (input: unknown, init?: RequestInit) => {
+      // /api/keys is optional; make it absent so only /api/stats is asserted.
+      if (String(input).endsWith(PROXY_KEYS_PATH)) return jsonResponse({}, 404);
+      authorization = new Headers(init?.headers).get("authorization");
+      return jsonResponse(PROXY_STATS);
+    }) as typeof fetch,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(authorization, "Bearer master-key");
+});
+
+test("expandOptionValue refuses a multi-line file reference", () => {
+  // A `{file:...}` option must not be able to ship an arbitrary secret (an SSH
+  // key, a .env) out as a Bearer token.
+  const readFile = () => "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END-----\n";
+  assert.throws(
+    () => expandOptionValue("{file:/nope}", { readFile }),
+    /文件引用不是凭据格式/,
+  );
+});
+
+test("expandOptionValue refuses an oversized file reference", () => {
+  const readFile = () => "k".repeat(513);
+  assert.throws(
+    () => expandOptionValue("{file:/nope}", { readFile }),
+    /超过 512 上限/,
+  );
 });
 
 test("fetchQuota reports a missing key without calling fetch", async () => {
@@ -303,7 +359,7 @@ test("fetchQuota reports a missing key without calling fetch", async () => {
   });
   assert.equal(called, false);
   assert.equal(result.ok, false);
-  if (!result.ok) assert.match(result.message, /no Tavily API key/);
+  if (!result.ok) assert.match(result.message, /未配置 Tavily API Key/);
 });
 
 test("fetchQuota sends the plugin-option key as a Bearer token", async () => {
@@ -324,8 +380,8 @@ test("fetchQuota sends the plugin-option key as a Bearer token", async () => {
 
 test("fetchQuota maps HTTP failures to messages", async () => {
   const cases: Array<[number, RegExp]> = [
-    [401, /rejected/],
-    [429, /rate limited/],
+    [401, /拒绝/],
+    [429, /限流/],
     [500, /HTTP 500/],
   ];
   for (const [status, pattern] of cases) {
@@ -344,7 +400,7 @@ test("fetchQuota reports invalid JSON", async () => {
     fetchImpl: (async () => new Response("not json", { status: 200 })) as typeof fetch,
   });
   assert.equal(result.ok, false);
-  if (!result.ok) assert.match(result.message, /invalid JSON/);
+  if (!result.ok) assert.match(result.message, /不是有效 JSON/);
 });
 
 test("fetchQuota derives a snapshot from a successful response", async () => {
@@ -367,7 +423,7 @@ test("fetchQuota reports network failures gracefully", async () => {
     }) as typeof fetch,
   });
   assert.equal(result.ok, false);
-  if (!result.ok) assert.match(result.message, /request failed: boom/);
+  if (!result.ok) assert.match(result.message, /请求失败：boom/);
 });
 
 test("fetchQuota sends a key read from a {file:...} option", async () => {
@@ -402,7 +458,7 @@ test("fetchQuota surfaces a bad file reference without calling fetch", async () 
   });
   assert.equal(called, false);
   assert.equal(result.ok, false);
-  if (!result.ok) assert.match(result.message, /bad file reference: "\{file:\/missing\}"/);
+  if (!result.ok) assert.match(result.message, /无法读取文件引用："\{file:\/missing\}"/);
 });
 
 test("fetchQuotaWithFallback uses OpenCode only when the CLI has no key", async () => {
@@ -449,11 +505,67 @@ test("proxyStatsUrl targets /api/stats and tolerates a trailing slash", () => {
   assert.equal(proxyStatsUrl("  http://host:1//  "), `http://host:1${PROXY_STATS_PATH}`);
 });
 
+test("proxySyncUrl targets /api/keys/sync", () => {
+  assert.equal(proxySyncUrl("http://127.0.0.1:27890"), `http://127.0.0.1:27890${PROXY_SYNC_PATH}`);
+  assert.equal(proxySyncUrl("http://127.0.0.1:27890/"), `http://127.0.0.1:27890${PROXY_SYNC_PATH}`);
+});
+
+test("syncProxyUsage posts then polls the shared job", async () => {
+  const calls: string[] = [];
+  const responses = [
+    { status: "running", total: 2, completed: 0 },
+    { status: "completed", total: 2, completed: 2, succeeded: 2, failed: 0 },
+  ];
+  const ok = await syncProxyUsage("http://127.0.0.1:27890", "master-key", {
+    syncTimeoutMs: 5_000,
+    fetchImpl: (async (input: unknown, init?: RequestInit) => {
+      calls.push(`${init?.method ?? "GET"} ${String(input)}`);
+      return jsonResponse(responses.shift() ?? { status: "completed" });
+    }) as typeof fetch,
+  });
+  assert.equal(ok, true);
+  assert.deepEqual(calls, [
+    `POST http://127.0.0.1:27890${PROXY_SYNC_PATH}`,
+    `GET http://127.0.0.1:27890${PROXY_SYNC_PATH}`,
+  ]);
+});
+
+test("syncProxyUsage returns false when the proxy rejects the master key", async () => {
+  const ok = await syncProxyUsage("http://127.0.0.1:27890", "master-key", {
+    fetchImpl: (async () => new Response("nope", { status: 401 })) as typeof fetch,
+  });
+  assert.equal(ok, false);
+});
+
+test("fetchQuota syncs official usage before reading stats when asked", async () => {
+  const calls: string[] = [];
+  const result = await fetchQuota({
+    env: {},
+    apiKey: "master-key",
+    proxyUrl: "http://127.0.0.1:27890",
+    sync: true,
+    fetchImpl: (async (input: unknown, init?: RequestInit) => {
+      calls.push(`${init?.method ?? "GET"} ${String(input)}`);
+      if (String(input).endsWith(PROXY_SYNC_PATH)) {
+        return jsonResponse({ status: "completed", total: 1, completed: 1, succeeded: 1, failed: 0 });
+      }
+      if (String(input).endsWith(PROXY_KEYS_PATH)) return jsonResponse({ items: [] });
+      return jsonResponse(PROXY_STATS);
+    }) as typeof fetch,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls, [
+    `POST http://127.0.0.1:27890${PROXY_SYNC_PATH}`,
+    `GET http://127.0.0.1:27890${PROXY_STATS_PATH}`,
+    `GET http://127.0.0.1:27890${PROXY_KEYS_PATH}`,
+  ]);
+});
+
 test("deriveProxySnapshot sums the whole pool and names the key count", () => {
   const result = deriveProxySnapshot(PROXY_STATS, 99);
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.equal(result.snapshot.planName, "Tavily Pool (6 keys)");
+  assert.equal(result.snapshot.planName, "Tavily 池（6 个 key）");
   assert.equal(result.snapshot.limit, 6000);
   assert.equal(result.snapshot.used, 1157);
   assert.equal(result.snapshot.remaining, 4843);
@@ -544,6 +656,26 @@ test("fetchQuota degrades to no pool detail when /api/keys 404s", async () => {
   if (result.ok) assert.equal(result.snapshot.pool, undefined);
 });
 
+test("fetchQuota surfaces a rejected /api/keys instead of hiding it", async () => {
+  const result = await fetchQuota({
+    env: {},
+    apiKey: "stale-master-key",
+    proxyUrl: "http://127.0.0.1:27890",
+    now: 7,
+    fetchImpl: (async (input: unknown) =>
+      String(input).endsWith(PROXY_KEYS_PATH)
+        ? jsonResponse({ error: "unauthorized" }, 401)
+        : jsonResponse(PROXY_STATS)) as typeof fetch,
+  });
+  // The headline quota still renders (it may be cached), but the rejected
+  // credential must be visible rather than silently swallowed.
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.snapshot.pool, undefined);
+    assert.match(result.snapshot.poolWarning ?? "", /401/);
+  }
+});
+
 test("fetchQuota degrades to no pool detail when /api/keys throws", async () => {
   const result = await fetchQuota({
     env: {},
@@ -604,7 +736,7 @@ test("formatPoolLine renders an empty string without pool detail", () => {
   assert.equal(formatPoolTailLine({ ...KEY_PAYLOAD_SNAPSHOT }), "");
   // A stats-only proxy falls back to the original one-line summary.
   assert.deepEqual(formatPoolDetailLines({ ...KEY_PAYLOAD_SNAPSHOT }, Date.UTC(2026, 9, 10)), [
-    "400/1000 left · 40% · resets in 22d 0h",
+    "剩余 400/1000 · 40% · 距重置 22天0小时",
   ]);
 });
 
@@ -612,17 +744,20 @@ test("formatPoolLine stays within the sidebar width", () => {
   const pool = derivePoolInfo(PROXY_KEYS);
   assert.ok(pool);
   const line = formatPoolLine(pool);
-  assert.equal(line.length, SIDEBAR_WIDTH);
-  assert.match(line, /2\/3 keys$/);
+  assert.equal(displayWidth(line), SIDEBAR_WIDTH);
+  assert.match(line, /2\/3 个$/);
 });
 
 test("formatPoolTailLine leads with absolute credits, then last used and spent", () => {
   const pool = derivePoolInfo(PROXY_KEYS);
   assert.ok(pool);
   const line = formatPoolTailLine({ ...KEY_PAYLOAD_SNAPSHOT, pool });
-  assert.equal(line, "400/1000 · last #2 · 1 spent");
+  assert.equal(line, "400/1000 · 最后 #2 · 1 个耗尽");
   // Headroom matters: the totals widen as keys are added, and the sidebar is 36.
-  assert.ok(line.length <= SIDEBAR_WIDTH - 7, `line is ${line.length} cols, too wide to grow`);
+  assert.ok(
+    displayWidth(line) <= SIDEBAR_WIDTH - 3,
+    `line is ${displayWidth(line)} cols, too wide to grow`,
+  );
 });
 
 test("formatPoolTailLine says unused when no key has been called", () => {
@@ -631,7 +766,7 @@ test("formatPoolTailLine says unused when no key has been called", () => {
   });
   assert.ok(pool);
   assert.equal(pool.lastUsed, null);
-  assert.equal(formatPoolTailLine({ ...KEY_PAYLOAD_SNAPSHOT, pool }), "400/1000 · unused");
+  assert.equal(formatPoolTailLine({ ...KEY_PAYLOAD_SNAPSHOT, pool }), "400/1000 · 未使用");
 });
 
 test("formatPoolTailLine omits the spent segment when nothing is exhausted", () => {
@@ -641,14 +776,14 @@ test("formatPoolTailLine omits the spent segment when nothing is exhausted", () 
     ],
   });
   assert.ok(pool);
-  assert.equal(formatPoolTailLine({ ...KEY_PAYLOAD_SNAPSHOT, pool }), "400/1000 · last #1");
+  assert.equal(formatPoolTailLine({ ...KEY_PAYLOAD_SNAPSHOT, pool }), "400/1000 · 最后 #1");
 });
 
 test("formatPoolDetailLines marks the last used row", () => {
   const pool = derivePoolInfo(PROXY_KEYS);
   assert.ok(pool);
   const lines = formatPoolDetailLines({ ...KEY_PAYLOAD_SNAPSHOT, pool }, Date.UTC(2026, 0, 1));
-  const last = lines.filter((l) => l.includes("<- last"));
+  const last = lines.filter((l) => l.includes("← 最近"));
   assert.equal(last.length, 1);
   assert.match(last[0], /#2/);
 });
@@ -665,15 +800,18 @@ test("fetchQuota reports a missing proxy master key without calling fetch", asyn
   });
   assert.equal(called, false);
   assert.equal(result.ok, false);
-  if (!result.ok) assert.match(result.message, /no master key for the Tavily proxy/);
+  if (!result.ok) assert.match(result.message, /未配置 Tavily 代理主密钥/);
 });
 
 test("fetchQuota maps a proxy 401 to a master-key message", async () => {
   const result = await fetchQuota({
-    env: { TAVILY_API_KEY: "k" },
+    // In proxy mode the master key comes from `apiKey`; a raw `TAVILY_API_KEY`
+    // must not be substituted for it (see resolveApiKey's `pooled` flag).
+    env: { TAVILY_API_KEY: "raw-tvly-key" },
+    apiKey: "master-key",
     proxyUrl: "http://127.0.0.1:27890",
     fetchImpl: (async () => new Response("nope", { status: 401 })) as typeof fetch,
   });
   assert.equal(result.ok, false);
-  if (!result.ok) assert.match(result.message, /proxy rejected the master key/);
+  if (!result.ok) assert.match(result.message, /代理拒绝了主密钥/);
 });

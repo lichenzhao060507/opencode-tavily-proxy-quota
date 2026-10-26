@@ -31,7 +31,17 @@ export const PROXY_STATS_PATH = "/api/stats";
  * still works against a proxy that only serves `/api/stats`.
  */
 export const PROXY_KEYS_PATH = "/api/keys";
+/**
+ * LOCAL FORK: ask the proxy to re-read every key's usage from Tavily's
+ * `/usage` endpoint. The proxy runs this as a background job; the same path
+ * reports its status with GET. This is the only way to align the pooled
+ * `used_quota` with Tavily's credit accounting, because `/api/stats` otherwise
+ * returns whatever the proxy last counted.
+ */
+export const PROXY_SYNC_PATH = "/api/keys/sync";
 export const DEFAULT_TIMEOUT_MS = 15_000;
+export const DEFAULT_SYNC_TIMEOUT_MS = 60_000;
+const SYNC_POLL_MS = 500;
 
 /**
  * Sidebar content width shared with the built-in quota section, which renders
@@ -39,10 +49,10 @@ export const DEFAULT_TIMEOUT_MS = 15_000;
  */
 export const SIDEBAR_WIDTH = 36;
 /**
- * Width the quota section reserves for its `100% left` / `100% used` label, so
- * labels line up vertically across sections.
+ * Width the quota section reserves for its `100% 剩余` label, so labels line up
+ * vertically across sections. `100% 剩余` is 4 + 1 + 4 = 9 terminal cells.
  */
-export const PERCENT_COLUMN_WIDTH = "100% left".length;
+export const PERCENT_COLUMN_WIDTH = 9;
 /** Gap between the bar and its label, matching the quota section's separator. */
 export const BAR_SEPARATOR = "  ";
 /**
@@ -100,6 +110,13 @@ export interface QuotaSnapshot {
    * when the proxy served `/api/keys`. Absent means "unknown", not "none".
    */
   pool?: PoolInfo;
+  /**
+   * LOCAL FORK: set when `/api/keys` answered 401/403, i.e. the master key was
+   * rejected. The headline quota can still render from `/api/stats` (which may
+   * be a cached value), so this is surfaced as a warning line rather than an
+   * error: the key problem must not be invisible.
+   */
+  poolWarning?: string;
 }
 
 /** LOCAL FORK: one pooled key as reported by `<proxyUrl>/api/keys`. */
@@ -163,6 +180,10 @@ export interface FetchQuotaOptions {
   cwd?: string;
   /** Request timeout in milliseconds. */
   timeoutMs?: number;
+  /** Ask the proxy to sync official usage before reading stats. */
+  sync?: boolean;
+  /** Budget for the whole proxy sync job, in milliseconds. */
+  syncTimeoutMs?: number;
   /** Injectable fetch, used by tests. Defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
   /** Injectable clock, used by tests. Defaults to `Date.now`. */
@@ -174,7 +195,8 @@ export async function fetchQuotaWithFallback(
   options: FetchQuotaOptions & { remote: () => Promise<QuotaResult> },
 ): Promise<QuotaResult> {
   try {
-    const key = resolveApiKey(options.env, options.apiKey, options);
+    const pooled = (options.proxyUrl ?? "").trim() !== "";
+    const key = resolveApiKey(options.env, options.apiKey, { ...options, pooled });
     if (key) return fetchQuota({ ...options, apiKey: key, env: {} });
   } catch {
     // Preserve the existing inline error for an unreadable {file:...} option.
@@ -184,7 +206,7 @@ export async function fetchQuotaWithFallback(
     return await options.remote();
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    return { ok: false, message: `OpenCode Tavily credential unavailable: ${reason}` };
+    return { ok: false, message: `OpenCode 的 Tavily 凭据不可用：${reason}` };
   }
 }
 
@@ -212,6 +234,13 @@ export interface ExpandOptions {
 const OPTION_REFERENCE = /\{(env|file):([^}]+)\}/g;
 
 /**
+ * Longest credential accepted from a `{file:...}` reference. API tokens are
+ * short; anything longer is almost certainly not a key and is refused rather
+ * than shipped as a Bearer token.
+ */
+const MAX_CREDENTIAL_LENGTH = 512;
+
+/**
  * Expand every `{env:NAME}` and `{file:PATH}` reference in a plugin option.
  *
  * `{env:NAME}` reads an environment variable (empty string when unset).
@@ -237,11 +266,25 @@ export function expandOptionValue(value: string, options: ExpandOptions = {}): s
           : isAbsolute(raw)
             ? raw
             : resolve(cwd, raw);
+    let contents: string;
     try {
-      return readFile(path).trim();
+      contents = readFile(path).trim();
     } catch (cause) {
-      throw new Error(`bad file reference: "${match}" (${path}) could not be read`, { cause });
+      throw new Error(`无法读取文件引用："${match}"（${path}）`, { cause });
     }
+    // A credential is a single short token. Refusing anything else stops a
+    // `{file:...}` option from being pointed at an arbitrary multi-line secret
+    // (an SSH private key, a .env, a cookie DB dump) and having its contents
+    // sent out as a `Authorization: Bearer <contents>` header.
+    if (contents.length > MAX_CREDENTIAL_LENGTH) {
+      throw new Error(
+        `文件引用不是凭据格式："${match}"（${path}）：内容 ${contents.length} 字符，超过 ${MAX_CREDENTIAL_LENGTH} 上限`,
+      );
+    }
+    if (/\s/.test(contents)) {
+      throw new Error(`文件引用不是凭据格式："${match}"（${path}）：内容含空白或多行`);
+    }
+    return contents;
   });
 }
 
@@ -255,9 +298,17 @@ export function expandOptionValue(value: string, options: ExpandOptions = {}): s
 export function resolveApiKey(
   env: Record<string, string | undefined> = process.env,
   apiKey?: string,
-  options: Omit<ExpandOptions, "env"> = {},
+  options: Omit<ExpandOptions, "env"> & { pooled?: boolean } = {},
 ): string {
-  const fromEnv = (env.TAVILY_API_KEY ?? "").trim();
+  // When `pooled` is set the caller explicitly wants pooled quota, so `apiKey`
+  // holds the proxy MASTER key. `TAVILY_API_KEY` is a raw `tvly-` key and must
+  // not preempt it: sending one to `<proxyUrl>/api/stats` yields a 401.
+  //
+  // The flag is passed in explicitly instead of being re-derived from
+  // `options.proxyUrl` here. That keeps this function's contract at
+  // `(env, apiKey, options)` and stops the precedence fix from silently
+  // regressing if a caller ever stops threading `proxyUrl` down to it.
+  const fromEnv = options.pooled ? "" : (env.TAVILY_API_KEY ?? "").trim();
   if (fromEnv) return fromEnv;
   const raw = (apiKey ?? "").trim();
   if (!raw) return "";
@@ -288,7 +339,7 @@ export function deriveSnapshot(
   const used = usePlan ? planUsage ?? 0 : keyUsage ?? 0;
 
   if (limit === null || limit <= 0) {
-    return { ok: false, message: "Tavily returned no credit limit for this key" };
+    return { ok: false, message: "Tavily 未返回该 key 的额度上限" };
   }
 
   const remaining = Math.max(0, limit - used);
@@ -336,7 +387,7 @@ export function deriveProxySnapshot(
   if (limit === null || limit <= 0) {
     return {
       ok: false,
-      message: "tavily proxy reported no pooled quota (check the proxy is running and keys are added)",
+      message: "Tavily 代理未返回池子额度（请检查代理是否运行、是否已添加 key）",
     };
   }
 
@@ -344,7 +395,7 @@ export function deriveProxySnapshot(
   const consumed = Math.max(0, used ?? limit - remaining);
   const keyCount = finite(payload.key_count);
   const planName =
-    keyCount !== null && keyCount > 0 ? `Tavily Pool (${keyCount} keys)` : "Tavily Pool";
+    keyCount !== null && keyCount > 0 ? `Tavily 池（${keyCount} 个 key）` : "Tavily 池";
 
   return {
     ok: true,
@@ -367,9 +418,93 @@ export function proxyKeysUrl(proxyUrl: string): string {
   return `${proxyUrl.trim().replace(/\/+$/, "")}${PROXY_KEYS_PATH}`;
 }
 
+/** LOCAL FORK: build the `<proxyUrl>/api/keys/sync` URL. */
+export function proxySyncUrl(proxyUrl: string): string {
+  return `${proxyUrl.trim().replace(/\/+$/, "")}${PROXY_SYNC_PATH}`;
+}
+
+/** Shape of the proxy's sync job status (every field optional). */
+export interface ProxySyncStatus {
+  status?: string;
+  total?: number;
+  completed?: number;
+  succeeded?: number;
+  failed?: number;
+  error?: string;
+}
+
+/**
+ * LOCAL FORK: ask the proxy to re-read every key's usage from Tavily's
+ * `/usage`, then wait for the shared background job to finish. Returns true
+ * only when the job completed. Failures are swallowed: callers still read the
+ * proxy's cached numbers, which auto-sync keeps reasonably fresh.
+ */
+export async function syncProxyUsage(
+  proxyUrl: string,
+  key: string,
+  options: FetchQuotaOptions = {},
+): Promise<boolean> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const timeoutMs = options.syncTimeoutMs ?? DEFAULT_SYNC_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
+  const url = proxySyncUrl(proxyUrl);
+
+  const readStatus = async (response: Response): Promise<ProxySyncStatus | null> => {
+    if (!response.ok) return null;
+    try {
+      return (await response.json()) as ProxySyncStatus;
+    } catch {
+      return null;
+    }
+  };
+
+  let status: ProxySyncStatus | null = null;
+  try {
+    status = await readStatus(
+      await fetchImpl(url, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(Math.min(15_000, timeoutMs)),
+      }),
+    );
+  } catch {
+    return false;
+  }
+  if (!status) return false;
+
+  while (status.status === "running") {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(SYNC_POLL_MS, remaining)));
+    const budget = deadline - Date.now();
+    if (budget <= 0) return false;
+    try {
+      status = await readStatus(
+        await fetchImpl(url, {
+          headers: { Authorization: `Bearer ${key}` },
+          signal: AbortSignal.timeout(budget),
+        }),
+      );
+    } catch {
+      return false;
+    }
+    if (!status) return false;
+  }
+  return status.status === "completed";
+}
+
 /** LOCAL FORK: one entry of `<proxyUrl>/api/keys` (every field optional). */
 export interface TavilyProxyKeysPayload {
-  items?: (Partial<PoolKey> & { total_quota?: number | null; used_quota?: number | null })[] | null;
+  items?:
+    | (Partial<PoolKey> & {
+        total_quota?: number | null;
+        used_quota?: number | null;
+        /** SQLite 0/1 or JSON boolean. */
+        is_active?: boolean | number | null;
+        is_invalid?: boolean | number | null;
+        last_used_at?: string | null;
+      })[]
+    | null;
 }
 
 /** Proxies report booleans as `true`/`false` or as SQLite's `1`/`0`. */
@@ -423,7 +558,9 @@ export function derivePoolInfo(payload: TavilyProxyKeysPayload): PoolInfo | unde
   let lastUsed: PoolKey | null = null;
   for (const key of keys) {
     if (key.lastUsedAt === null) continue;
-    if (lastUsed === null || key.lastUsedAt > lastUsed.lastUsedAt) lastUsed = key;
+    if (lastUsed === null || lastUsed.lastUsedAt === null || key.lastUsedAt > lastUsed.lastUsedAt) {
+      lastUsed = key;
+    }
   }
 
   return { keys, total: keys.length, exhausted, live, lastUsed };
@@ -433,6 +570,35 @@ export function derivePoolInfo(payload: TavilyProxyKeysPayload): PoolInfo | unde
 export function formatPercent(percentRemaining: number): string {
   const clamped = Math.max(0, Math.min(100, percentRemaining));
   return `${clamped.toFixed(clamped >= 10 ? 0 : 1)}%`;
+}
+
+/**
+ * Terminal cells occupied by `text`. CJK characters and full-width punctuation
+ * take two cells; `String#length` would undercount them and break the sidebar's
+ * right-aligned label column.
+ */
+export function displayWidth(text: string): number {
+  let width = 0;
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0;
+    width +=
+      (code >= 0x1100 && code <= 0x115f) ||
+      (code >= 0x2e80 && code <= 0xa4cf) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe10 && code <= 0xfe19) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6)
+        ? 2
+        : 1;
+  }
+  return width;
+}
+
+function padStartDisplay(text: string, width: number): string {
+  const diff = width - displayWidth(text);
+  return diff > 0 ? " ".repeat(diff) + text : text;
 }
 
 /** Render a fixed-width progress bar for a remaining percentage. */
@@ -454,13 +620,13 @@ export function formatQuotaLine(
   snapshot: QuotaSnapshot,
   width = DEFAULT_BAR_WIDTH,
 ): string {
-  const label = `${formatPercent(snapshot.percentRemaining)} left`;
-  return `${progressBar(snapshot.percentRemaining, width)}${BAR_SEPARATOR}${label.padStart(PERCENT_COLUMN_WIDTH)}`;
+  const label = `${formatPercent(snapshot.percentRemaining)} 剩余`;
+  return `${progressBar(snapshot.percentRemaining, width)}${BAR_SEPARATOR}${padStartDisplay(label, PERCENT_COLUMN_WIDTH)}`;
 }
 
-/** Format the headline line, e.g. `839 credits left`. */
+/** Format the headline line, e.g. `剩余 839 额度`. */
 export function formatRemaining(snapshot: QuotaSnapshot): string {
-  return `${snapshot.remaining} credits left`;
+  return `剩余 ${snapshot.remaining} 额度`;
 }
 
 /* ------------------------------------------------------------------ *
@@ -481,7 +647,7 @@ function keyTag(key: PoolKey): string {
 
 /**
  * LOCAL FORK: the per-key bar line, e.g.
- * `[███████▓▓▓░░░░░░░░░░░░░░░]  8/9 keys`.
+ * `[███████▓▓▓░░░░░░░░░░░░░░░]  8/9 个`.
  *
  * One cell is roughly one key; filled cells are keys that can still serve a
  * request. Returns an empty string when there is no pool detail, so callers can
@@ -492,8 +658,8 @@ export function formatPoolLine(pool: PoolInfo | undefined, width = DEFAULT_BAR_W
   const safeWidth = Math.max(1, Math.floor(width));
   const filled = Math.round((pool.live / pool.total) * safeWidth);
   const bar = POOL_FILL.repeat(filled) + "░".repeat(Math.max(0, safeWidth - filled));
-  const label = `${pool.live}/${pool.total} keys`;
-  return `${bar}${BAR_SEPARATOR}${label.padStart(PERCENT_COLUMN_WIDTH)}`;
+  const label = `${pool.live}/${pool.total} 个`;
+  return `${bar}${BAR_SEPARATOR}${padStartDisplay(label, PERCENT_COLUMN_WIDTH)}`;
 }
 
 /**
@@ -514,9 +680,9 @@ export function formatPoolTailLine(snapshot: QuotaSnapshot): string {
   const pool = snapshot.pool;
   if (!pool || pool.total === 0) return "";
   const parts: string[] = [`${snapshot.remaining}/${snapshot.limit}`];
-  if (pool.lastUsed) parts.push(`last ${keyTag(pool.lastUsed)}`);
-  else parts.push("unused");
-  if (pool.exhausted > 0) parts.push(`${pool.exhausted} spent`);
+  if (pool.lastUsed) parts.push(`最后 ${keyTag(pool.lastUsed)}`);
+  else parts.push("未使用");
+  if (pool.exhausted > 0) parts.push(`${pool.exhausted} 个耗尽`);
   return parts.join(" · ");
 }
 
@@ -528,7 +694,7 @@ export function formatPoolKeyLine(key: PoolKey, width = 10): string {
   const bar = POOL_FILL.repeat(Math.min(safeWidth, filled)) + "░".repeat(Math.max(0, safeWidth - filled));
   const amounts = `${key.used}/${key.quota}`;
   const spent = key.quota > 0 && key.used >= key.quota;
-  const tags = [spent ? "spent" : key.invalid ? "invalid" : null].filter(Boolean).join(" ");
+  const tags = [spent ? "已耗尽" : key.invalid ? "无效" : null].filter(Boolean).join(" ");
   const tail = `${amounts}${tags ? `  ${tags}` : ""}`;
   return `${keyTag(key).padStart(3)} ${bar}  ${tail}`;
 }
@@ -540,15 +706,15 @@ export function formatPoolKeyLine(key: PoolKey, width = 10): string {
  * `/api/keys`, so the command still works against a stats-only proxy.
  */
 export function formatPoolDetailLines(snapshot: QuotaSnapshot, now: number = Date.now()): string[] {
-  const head = `${snapshot.remaining}/${snapshot.limit} left · ${formatPercent(snapshot.percentRemaining)} · resets in ${formatResetCountdown(nextMonthlyResetAt(now), now)}`;
+  const head = `剩余 ${snapshot.remaining}/${snapshot.limit} · ${formatPercent(snapshot.percentRemaining)} · 距重置 ${formatResetCountdown(nextMonthlyResetAt(now), now)}`;
   const pool = snapshot.pool;
   if (!pool || pool.total === 0) return [head];
 
   const rows = pool.keys.map((key) => {
     const line = formatPoolKeyLine(key);
-    return pool.lastUsed?.id === key.id ? `${line}  <- last` : line;
+    return pool.lastUsed?.id === key.id ? `${line}  ← 最近` : line;
   });
-  return [head, `${pool.live}/${pool.total} keys live · ${pool.exhausted} spent`, "─".repeat(28), ...rows];
+  return [head, `${pool.live}/${pool.total} 个可用 · ${pool.exhausted} 个已耗尽`, "─".repeat(28), ...rows];
 }
 
 const MS_PER_MINUTE = 60_000;
@@ -576,18 +742,18 @@ export function nextMonthlyResetAt(now: number = Date.now()): number {
  */
 export function formatResetCountdown(resetAt: number, now: number = Date.now()): string {
   const diff = resetAt - now;
-  if (!Number.isFinite(diff) || diff <= 0) return "0m";
+  if (!Number.isFinite(diff) || diff <= 0) return "0分";
   const days = Math.floor(diff / MS_PER_DAY);
   const hours = Math.floor((diff % MS_PER_DAY) / MS_PER_HOUR);
   const minutes = Math.floor((diff % MS_PER_HOUR) / MS_PER_MINUTE);
-  if (days > 0) return `${days}d ${hours}h`;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  return `${Math.max(1, minutes)}m`;
+  if (days > 0) return `${days}天${hours}小时`;
+  if (hours > 0) return `${hours}小时${minutes}分`;
+  return `${Math.max(1, minutes)}分`;
 }
 
-/** Sidebar line for the next reset, e.g. `resets in 12d 4h`. */
+/** Sidebar line for the next reset, e.g. `距重置 12天4小时`. */
 export function formatResetLine(now: number = Date.now()): string {
-  return `resets in ${formatResetCountdown(nextMonthlyResetAt(now), now)}`;
+  return `距重置 ${formatResetCountdown(nextMonthlyResetAt(now), now)}`;
 }
 
 /**
@@ -597,23 +763,30 @@ export function formatResetLine(now: number = Date.now()): string {
  * sidebar can render it inline.
  */
 export async function fetchQuota(options: FetchQuotaOptions = {}): Promise<QuotaResult> {
+  const proxyUrl = (options.proxyUrl ?? "").trim();
   let key: string;
   try {
-    key = resolveApiKey(options.env, options.apiKey, options);
+    key = resolveApiKey(options.env, options.apiKey, { ...options, pooled: proxyUrl !== "" });
   } catch (error) {
     // A `{file:...}` option can point at a missing or unreadable file; surface
     // that inline instead of rejecting the sidebar render.
     return { ok: false, message: error instanceof Error ? error.message : String(error) };
   }
-  const proxyUrl = (options.proxyUrl ?? "").trim();
 
   if (!key) {
     return {
       ok: false,
       message: proxyUrl
-        ? "no master key for the Tavily proxy (set the apiKey plugin option)"
-        : "no Tavily API key (set TAVILY_API_KEY or the apiKey plugin option)",
+        ? "未配置 Tavily 代理主密钥（请设置 apiKey 插件选项）"
+        : "未配置 Tavily API Key（请设置 TAVILY_API_KEY 或 apiKey 插件选项）",
     };
+  }
+
+  // LOCAL FORK: align the proxy's cached `used_quota` with Tavily's official
+  // credit accounting before reading it. Manual refreshes request this; the
+  // proxy's own auto-sync keeps the cache warm between them.
+  if (proxyUrl && options.sync) {
+    await syncProxyUsage(proxyUrl, key, options);
   }
 
   const endpoint = proxyUrl ? proxyStatsUrl(proxyUrl) : USAGE_URL;
@@ -628,27 +801,27 @@ export async function fetchQuota(options: FetchQuotaOptions = {}): Promise<Quota
     });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    return { ok: false, message: `request failed: ${reason}` };
+    return { ok: false, message: `请求失败：${reason}` };
   }
 
   if (response.status === 401) {
     return {
       ok: false,
-      message: proxyUrl ? "proxy rejected the master key (401)" : "API key rejected (401)",
+      message: proxyUrl ? "代理拒绝了主密钥（401）" : "API Key 被拒绝（401）",
     };
   }
   if (response.status === 429) {
-    return { ok: false, message: `rate limited on ${endpointLabel} (10 req / 10 min)` };
+    return { ok: false, message: `触发限流：${endpointLabel}（10 次 / 10 分钟）` };
   }
   if (!response.ok) {
-    return { ok: false, message: `HTTP ${response.status} from ${endpointLabel}` };
+    return { ok: false, message: `${endpointLabel} 返回 HTTP ${response.status}` };
   }
 
   let payload: TavilyUsagePayload | TavilyProxyStatsPayload;
   try {
     payload = (await response.json()) as TavilyUsagePayload | TavilyProxyStatsPayload;
   } catch {
-    return { ok: false, message: `invalid JSON from ${endpointLabel}` };
+    return { ok: false, message: `${endpointLabel} 返回的不是有效 JSON` };
   }
 
   const derived = proxyUrl
@@ -657,34 +830,58 @@ export async function fetchQuota(options: FetchQuotaOptions = {}): Promise<Quota
 
   // LOCAL FORK: enrich proxy mode with the per-key breakdown.
   //
-  // Every failure mode is swallowed on purpose. `/api/keys` is not part of the
-  // upstream proxy contract, so a 404, an auth rejection or a timeout must leave
-  // the headline quota intact rather than replace a working sidebar with an
-  // error -- the breakdown is an extra, not a requirement.
+  // `/api/keys` is not part of the upstream proxy contract, so a 404 or a
+  // timeout leaves the headline quota intact rather than replacing a working
+  // sidebar with an error -- the breakdown is an extra, not a requirement.
+  // A 401/403 is different: the master key was rejected, so the numbers above
+  // may be stale. That case is reported as a warning instead of being hidden.
   if (!derived.ok || !proxyUrl) return derived;
 
   const pool = await fetchPoolInfo(proxyUrl, key, options);
-  return pool ? { ok: true, snapshot: { ...derived.snapshot, pool } } : derived;
+  if (pool.kind === "ok") {
+    return { ok: true, snapshot: { ...derived.snapshot, pool: pool.pool } };
+  }
+  if (pool.kind === "denied") {
+    return {
+      ok: true,
+      snapshot: {
+        ...derived.snapshot,
+        poolWarning: `读取池子明细被拒（HTTP ${pool.status}）：主密钥可能已失效`,
+      },
+    };
+  }
+  return derived;
 }
 
+type PoolFetch =
+  | { kind: "ok"; pool: PoolInfo }
+  | { kind: "absent" }
+  | { kind: "denied"; status: number };
+
 /**
- * LOCAL FORK: best-effort `<proxyUrl>/api/keys` read. Returns `undefined` for
- * every failure, including a proxy that does not implement the endpoint.
+ * LOCAL FORK: best-effort `<proxyUrl>/api/keys` read. Returns `absent` for
+ * every failure that means "no breakdown available" (a proxy that does not
+ * implement the endpoint, a timeout, malformed JSON), and `denied` when the
+ * proxy explicitly rejected the credential.
  */
 async function fetchPoolInfo(
   proxyUrl: string,
   key: string,
   options: FetchQuotaOptions,
-): Promise<PoolInfo | undefined> {
+): Promise<PoolFetch> {
   const fetchImpl = options.fetchImpl ?? fetch;
   try {
     const response = await fetchImpl(proxyKeysUrl(proxyUrl), {
       headers: { Authorization: `Bearer ${key}` },
       signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
     });
-    if (!response.ok) return undefined;
-    return derivePoolInfo((await response.json()) as TavilyProxyKeysPayload);
+    if (response.status === 401 || response.status === 403) {
+      return { kind: "denied", status: response.status };
+    }
+    if (!response.ok) return { kind: "absent" };
+    const pool = derivePoolInfo((await response.json()) as TavilyProxyKeysPayload);
+    return pool ? { kind: "ok", pool } : { kind: "absent" };
   } catch {
-    return undefined;
+    return { kind: "absent" };
   }
 }
