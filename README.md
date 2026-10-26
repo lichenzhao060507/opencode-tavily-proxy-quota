@@ -17,7 +17,7 @@ This is a fork of a fork:
 |---|---|
 | [cardin/opencode-tavily-quota](https://github.com/cardin/opencode-tavily-quota) | original: one key's `/usage` in the sidebar |
 | [54cwh/opencode-tavily-proxy-quota](https://github.com/54cwh/opencode-tavily-proxy-quota) | pooled quota from a [TavilyProxyManager](https://github.com/xuncv/TavilyProxyManager) (`/api/stats`) |
-| this fork | per-key breakdown (`/api/keys`), on-demand sync, clickable refresh, Chinese UI, credential-handling fixes |
+| this fork | per-key breakdown (`/api/keys`), on-demand sync, clickable **Refresh** + **Details** buttons, Chinese/English UI, credential-handling fixes |
 
 Without `proxyUrl` it behaves exactly like the original: one account's credits
 from `api.tavily.com/usage`.
@@ -36,6 +36,17 @@ Tavily
 The first bar is monthly credits left; the second counts keys in the proxy pool
 that can still serve a request. Both are 25 cells plus a right-aligned label
 column, so they line up with OpenCode's built-in quota section.
+
+The English build (`"locale": "en"`) trades a cell of bar width for its wider
+labels and stays on 36 columns:
+
+```text
+Tavily
+ Refresh  Details  reset 5d 12h
+████████░░░░░░░░░░░░░░░░    32% left
+▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░  16/19 keys
+6143/19000 · last #19 · 3 spent
+```
 
 
 ## Install
@@ -120,8 +131,46 @@ the API key as a plugin option instead, register the plugin in `cli.json`:
 
 The CLI-only `cli.json` entry also keeps the plugin active when the TUI is
 connected to a remote server. The same entry accepts a `refreshMs` option to
-override the default 10 minute poll interval (Tavily's `/usage` endpoint allows
-at most 10 requests per 10 minutes, so keep it at or above that).
+override the default poll interval — 10 minutes in direct mode (Tavily's
+`/usage` allows 10 requests per 10 minutes), 60 seconds in proxy mode (it only
+reads the local cache).
+
+### Language
+
+The sidebar ships in Chinese and English:
+
+```json title="cli.json"
+{
+  "plugins": [
+    {
+      "package": "github:lichenzhao060507/opencode-tavily-proxy-quota",
+      "options": {
+        "apiKey": "<proxy master key>",
+        "locale": "en"
+      }
+    }
+  ]
+}
+```
+
+`locale` is `"auto"` (default), `"zh"` or `"en"`. `"auto"` reads `LC_ALL` /
+`LC_MESSAGES` / `LANG`, then the OS locale, and falls back to Chinese. Set it
+explicitly if your terminal locale does not match what you want.
+
+```text
+Tavily
+ Refresh  Details  reset 5d 12h
+████████░░░░░░░░░░░░░░░░    32% left
+▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░  16/19 keys
+6143/19000 · last #19 · 3 spent
+```
+
+### Buttons
+
+- **Refresh** re-reads the proxy cache, then syncs every key from Tavily in the
+  background (10–20 s on a large pool) and reports what happened.
+- **Details** opens the per-key breakdown as a toast. It reads current state and
+  never syncs, so it is instant. Same view as `/tavily-quota`.
 
 ### Keeping the key out of the file
 

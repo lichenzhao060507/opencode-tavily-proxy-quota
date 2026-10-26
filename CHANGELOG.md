@@ -6,6 +6,26 @@ upstream package version until this fork diverges meaningfully.
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-10-26
+
+### Added
+
+- **Details button** in the sidebar, between Refresh and the reset countdown.
+  It opens the per-key breakdown as a toast — the same view as
+  `/tavily-quota` — without triggering a Tavily sync, so it is instant.
+- **English UI** alongside Chinese. Pick with the new `locale` option
+  (`auto` / `zh` / `en`); `auto` reads `LC_ALL`/`LANG` then the OS locale and
+  falls back to Chinese. Label widths are derived per locale, so both builds
+  stay on the 36-column sidebar.
+
+### Changed
+
+- `/tavily-quota` and the palette command now show the detail view instead of
+  forcing a sync. Refresh is the button that syncs.
+- `usage.ts` formatters take an optional `locale`; the default stays Chinese, so
+  existing behaviour is unchanged.
+- `scripts/build.mjs` also emits `dist/i18n.js`.
+
 ## [1.2.0] — 2026-10-26
 
 Refreshing was slow and quietly wrong. Both are fixed.

@@ -14,6 +14,8 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
+import { messages, type Locale } from "./i18n";
+
 export const USAGE_URL = "https://api.tavily.com/usage";
 /**
  * Path the TavilyProxyManager (https://github.com/xuncv/TavilyProxyManager)
@@ -60,6 +62,22 @@ export const BAR_SEPARATOR = "  ";
  * `36 (sidebar) − 2 (separator) − 9 (percent column) = 25`.
  */
 export const DEFAULT_BAR_WIDTH = SIDEBAR_WIDTH - BAR_SEPARATOR.length - PERCENT_COLUMN_WIDTH;
+
+/**
+ * Widest label the right-hand column has to hold.
+ *
+ * Chinese `100% 剩余` is 9 cells (two full-width glyphs); English `16/19 keys`
+ * is 10. Everything else stays inside those, so the column is a per-locale
+ * constant rather than a single number.
+ */
+export function percentColumnWidth(locale: Locale = "zh"): number {
+  return locale === "en" ? 10 : PERCENT_COLUMN_WIDTH;
+}
+
+/** Bar width that leaves exactly one label column, for the given locale. */
+export function barWidthFor(locale: Locale = "zh"): number {
+  return SIDEBAR_WIDTH - BAR_SEPARATOR.length - percentColumnWidth(locale);
+}
 
 /** Shape of `GET https://api.tavily.com/usage` (all fields optional). */
 export interface TavilyUsagePayload {
@@ -188,6 +206,8 @@ export interface FetchQuotaOptions {
   fetchImpl?: typeof fetch;
   /** Injectable clock, used by tests. Defaults to `Date.now`. */
   now?: number;
+  /** Language for user-facing messages. Defaults to Chinese. */
+  locale?: Locale;
 }
 
 /** Prefer CLI credentials; ask the server only when the CLI has no key. */
@@ -206,7 +226,7 @@ export async function fetchQuotaWithFallback(
     return await options.remote();
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    return { ok: false, message: `OpenCode 的 Tavily 凭据不可用：${reason}` };
+    return { ok: false, message: messages(options.locale ?? "zh").credUnavailable(reason) };
   }
 }
 
@@ -229,6 +249,8 @@ export interface ExpandOptions {
   home?: string;
   /** Base directory for relative paths. Defaults to `process.cwd()`. */
   cwd?: string;
+  /** Language for error messages. Defaults to Chinese. */
+  locale?: Locale;
 }
 
 const OPTION_REFERENCE = /\{(env|file):([^}]+)\}/g;
@@ -253,6 +275,7 @@ export function expandOptionValue(value: string, options: ExpandOptions = {}): s
   const readFile = options.readFile ?? ((path: string) => readFileSync(path, "utf8"));
   const home = options.home ?? homedir();
   const cwd = options.cwd ?? process.cwd();
+  const m = messages(options.locale ?? "zh");
 
   return value.replace(OPTION_REFERENCE, (match, kind: string, body: string) => {
     if (kind === "env") return env[body] ?? "";
@@ -270,19 +293,17 @@ export function expandOptionValue(value: string, options: ExpandOptions = {}): s
     try {
       contents = readFile(path).trim();
     } catch (cause) {
-      throw new Error(`无法读取文件引用："${match}"（${path}）`, { cause });
+      throw new Error(m.fileReadFailed(match, path), { cause });
     }
     // A credential is a single short token. Refusing anything else stops a
     // `{file:...}` option from being pointed at an arbitrary multi-line secret
     // (an SSH private key, a .env, a cookie DB dump) and having its contents
     // sent out as a `Authorization: Bearer <contents>` header.
     if (contents.length > MAX_CREDENTIAL_LENGTH) {
-      throw new Error(
-        `文件引用不是凭据格式："${match}"（${path}）：内容 ${contents.length} 字符，超过 ${MAX_CREDENTIAL_LENGTH} 上限`,
-      );
+      throw new Error(m.fileTooLong(match, path, contents.length, MAX_CREDENTIAL_LENGTH));
     }
     if (/\s/.test(contents)) {
-      throw new Error(`文件引用不是凭据格式："${match}"（${path}）：内容含空白或多行`);
+      throw new Error(m.fileMultiline(match, path));
     }
     return contents;
   });
@@ -325,6 +346,7 @@ export function resolveApiKey(
 export function deriveSnapshot(
   payload: TavilyUsagePayload,
   now: number = Date.now(),
+  locale: Locale = "zh",
 ): QuotaResult {
   const account = payload.account ?? {};
   const key = payload.key ?? {};
@@ -339,7 +361,7 @@ export function deriveSnapshot(
   const used = usePlan ? planUsage ?? 0 : keyUsage ?? 0;
 
   if (limit === null || limit <= 0) {
-    return { ok: false, message: "Tavily 未返回该 key 的额度上限" };
+    return { ok: false, message: messages(locale).noLimitForKey };
   }
 
   const remaining = Math.max(0, limit - used);
@@ -379,23 +401,22 @@ export function proxyStatsUrl(proxyUrl: string): string {
 export function deriveProxySnapshot(
   payload: TavilyProxyStatsPayload,
   now: number = Date.now(),
+  locale: Locale = "zh",
 ): QuotaResult {
+  const m = messages(locale);
   const limit = finite(payload.total_quota);
   const used = finite(payload.total_used);
   const remainingRaw = finite(payload.total_remaining);
 
   if (limit === null || limit <= 0) {
-    return {
-      ok: false,
-      message: "Tavily 代理未返回池子额度（请检查代理是否运行、是否已添加 key）",
-    };
+    return { ok: false, message: m.proxyNoPoolQuota };
   }
 
   const remaining = Math.max(0, remainingRaw ?? limit - (used ?? 0));
   const consumed = Math.max(0, used ?? limit - remaining);
   const keyCount = finite(payload.key_count);
   const planName =
-    keyCount !== null && keyCount > 0 ? `Tavily 池（${keyCount} 个 key）` : "Tavily 池";
+    keyCount !== null && keyCount > 0 ? m.poolNameWithCount(keyCount) : m.poolName;
 
   return {
     ok: true,
@@ -494,6 +515,7 @@ export async function syncProxyUsage(
   options: FetchQuotaOptions = {},
 ): Promise<SyncOutcome> {
   const startedAt = Date.now();
+  const m = messages(options.locale ?? "zh");
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.syncTimeoutMs ?? DEFAULT_SYNC_TIMEOUT_MS;
   const deadline = startedAt + timeoutMs;
@@ -527,9 +549,9 @@ export async function syncProxyUsage(
       }),
     );
   } catch {
-    return unavailable("同步请求未送达代理");
+    return unavailable(m.syncNotDelivered);
   }
-  if (!status) return unavailable("代理未返回同步状态");
+  if (!status) return unavailable(m.syncNotDelivered);
 
   while (status.status === "running") {
     const remaining = deadline - Date.now();
@@ -545,9 +567,9 @@ export async function syncProxyUsage(
         }),
       );
     } catch {
-      return unavailable("轮询同步状态时连接中断");
+      return unavailable(m.syncNotDelivered);
     }
-    if (!status) return unavailable("代理未返回同步状态");
+    if (!status) return unavailable(m.syncNotDelivered);
   }
   return classifySync(status, elapsed());
 }
@@ -677,15 +699,18 @@ export function progressBar(percentRemaining: number, width = DEFAULT_BAR_WIDTH)
  */
 export function formatQuotaLine(
   snapshot: QuotaSnapshot,
-  width = DEFAULT_BAR_WIDTH,
+  width?: number,
+  locale: Locale = "zh",
 ): string {
-  const label = `${formatPercent(snapshot.percentRemaining)} 剩余`;
-  return `${progressBar(snapshot.percentRemaining, width)}${BAR_SEPARATOR}${padStartDisplay(label, PERCENT_COLUMN_WIDTH)}`;
+  const m = messages(locale);
+  const label = m.quotaLeft(formatPercent(snapshot.percentRemaining));
+  const w = width ?? barWidthFor(locale);
+  return `${progressBar(snapshot.percentRemaining, w)}${BAR_SEPARATOR}${padStartDisplay(label, percentColumnWidth(locale))}`;
 }
 
-/** Format the headline line, e.g. `剩余 839 额度`. */
-export function formatRemaining(snapshot: QuotaSnapshot): string {
-  return `剩余 ${snapshot.remaining} 额度`;
+/** Format the headline line, e.g. `剩余 839 额度` / `839 credits left`. */
+export function formatRemaining(snapshot: QuotaSnapshot, locale: Locale = "zh"): string {
+  return messages(locale).creditsLeft(snapshot.remaining);
 }
 
 /* ------------------------------------------------------------------ *
@@ -712,13 +737,17 @@ function keyTag(key: PoolKey): string {
  * request. Returns an empty string when there is no pool detail, so callers can
  * filter it out.
  */
-export function formatPoolLine(pool: PoolInfo | undefined, width = DEFAULT_BAR_WIDTH): string {
+export function formatPoolLine(
+  pool: PoolInfo | undefined,
+  width?: number,
+  locale: Locale = "zh",
+): string {
   if (!pool || pool.total === 0) return "";
-  const safeWidth = Math.max(1, Math.floor(width));
+  const safeWidth = Math.max(1, Math.floor(width ?? barWidthFor(locale)));
   const filled = Math.round((pool.live / pool.total) * safeWidth);
   const bar = POOL_FILL.repeat(filled) + "░".repeat(Math.max(0, safeWidth - filled));
-  const label = `${pool.live}/${pool.total} 个`;
-  return `${bar}${BAR_SEPARATOR}${padStartDisplay(label, PERCENT_COLUMN_WIDTH)}`;
+  const label = messages(locale).keysFraction(pool.live, pool.total);
+  return `${bar}${BAR_SEPARATOR}${padStartDisplay(label, percentColumnWidth(locale))}`;
 }
 
 /**
@@ -735,25 +764,27 @@ export function formatPoolLine(pool: PoolInfo | undefined, width = DEFAULT_BAR_W
  * countdown is deliberately omitted -- `formatResetLine` already sits above the
  * quota bar and repeating it here would just burn sidebar width.
  */
-export function formatPoolTailLine(snapshot: QuotaSnapshot): string {
+export function formatPoolTailLine(snapshot: QuotaSnapshot, locale: Locale = "zh"): string {
+  const m = messages(locale);
   const pool = snapshot.pool;
   if (!pool || pool.total === 0) return "";
   const parts: string[] = [`${snapshot.remaining}/${snapshot.limit}`];
-  if (pool.lastUsed) parts.push(`最后 ${keyTag(pool.lastUsed)}`);
-  else parts.push("未使用");
-  if (pool.exhausted > 0) parts.push(`${pool.exhausted} 个耗尽`);
+  if (pool.lastUsed) parts.push(m.lastUsed(keyTag(pool.lastUsed)));
+  else parts.push(m.unused);
+  if (pool.exhausted > 0) parts.push(m.exhaustedCount(pool.exhausted));
   return parts.join(" · ");
 }
 
 /** LOCAL FORK: one per-key row for the `/tavily-quota` detail view. */
-export function formatPoolKeyLine(key: PoolKey, width = 10): string {
+export function formatPoolKeyLine(key: PoolKey, width = 10, locale: Locale = "zh"): string {
+  const m = messages(locale);
   const safeWidth = Math.max(1, Math.floor(width));
   const percent = key.quota > 0 ? (key.used / key.quota) * 100 : 0;
   const filled = Math.round((percent / 100) * safeWidth);
   const bar = POOL_FILL.repeat(Math.min(safeWidth, filled)) + "░".repeat(Math.max(0, safeWidth - filled));
   const amounts = `${key.used}/${key.quota}`;
   const spent = key.quota > 0 && key.used >= key.quota;
-  const tags = [spent ? "已耗尽" : key.invalid ? "无效" : null].filter(Boolean).join(" ");
+  const tags = [spent ? m.spentTag : key.invalid ? m.invalidTag : null].filter(Boolean).join(" ");
   const tail = `${amounts}${tags ? `  ${tags}` : ""}`;
   return `${keyTag(key).padStart(3)} ${bar}  ${tail}`;
 }
@@ -764,16 +795,26 @@ export function formatPoolKeyLine(key: PoolKey, width = 10): string {
  * Falls back to the single-line summary when the proxy did not serve
  * `/api/keys`, so the command still works against a stats-only proxy.
  */
-export function formatPoolDetailLines(snapshot: QuotaSnapshot, now: number = Date.now()): string[] {
-  const head = `剩余 ${snapshot.remaining}/${snapshot.limit} · ${formatPercent(snapshot.percentRemaining)} · 距重置 ${formatResetCountdown(nextMonthlyResetAt(now), now)}`;
+export function formatPoolDetailLines(
+  snapshot: QuotaSnapshot,
+  now: number = Date.now(),
+  locale: Locale = "zh",
+): string[] {
+  const m = messages(locale);
+  const head = m.detailHead(
+    snapshot.remaining,
+    snapshot.limit,
+    formatPercent(snapshot.percentRemaining),
+    formatResetCountdown(nextMonthlyResetAt(now), now, locale),
+  );
   const pool = snapshot.pool;
   if (!pool || pool.total === 0) return [head];
 
   const rows = pool.keys.map((key) => {
-    const line = formatPoolKeyLine(key);
-    return pool.lastUsed?.id === key.id ? `${line}  ← 最近` : line;
+    const line = formatPoolKeyLine(key, 10, locale);
+    return pool.lastUsed?.id === key.id ? `${line}  ${m.recentlyUsed}` : line;
   });
-  return [head, `${pool.live}/${pool.total} 个可用 · ${pool.exhausted} 个已耗尽`, "─".repeat(28), ...rows];
+  return [head, m.detailPoolSummary(pool.live, pool.total, pool.exhausted), "─".repeat(28), ...rows];
 }
 
 const MS_PER_MINUTE = 60_000;
@@ -799,20 +840,25 @@ export function nextMonthlyResetAt(now: number = Date.now()): number {
  * Days and hours are floored so the value never overstates the time left; a
  * sub-minute remainder rounds up to `1m`, and a past reset reads `0m`.
  */
-export function formatResetCountdown(resetAt: number, now: number = Date.now()): string {
+export function formatResetCountdown(
+  resetAt: number,
+  now: number = Date.now(),
+  locale: Locale = "zh",
+): string {
+  const m = messages(locale);
   const diff = resetAt - now;
-  if (!Number.isFinite(diff) || diff <= 0) return "0分";
+  if (!Number.isFinite(diff) || diff <= 0) return m.countdownNow;
   const days = Math.floor(diff / MS_PER_DAY);
   const hours = Math.floor((diff % MS_PER_DAY) / MS_PER_HOUR);
   const minutes = Math.floor((diff % MS_PER_HOUR) / MS_PER_MINUTE);
-  if (days > 0) return `${days}天${hours}小时`;
-  if (hours > 0) return `${hours}小时${minutes}分`;
-  return `${Math.max(1, minutes)}分`;
+  if (days > 0) return m.countdownDays(days, hours);
+  if (hours > 0) return m.countdownHours(hours, minutes);
+  return m.countdownMinutes(Math.max(1, minutes));
 }
 
 /** Sidebar line for the next reset, e.g. `距重置 12天4小时`. */
-export function formatResetLine(now: number = Date.now()): string {
-  return `距重置 ${formatResetCountdown(nextMonthlyResetAt(now), now)}`;
+export function formatResetLine(now: number = Date.now(), locale: Locale = "zh"): string {
+  return messages(locale).resetLine(formatResetCountdown(nextMonthlyResetAt(now), now, locale));
 }
 
 /**
@@ -822,6 +868,8 @@ export function formatResetLine(now: number = Date.now()): string {
  * sidebar can render it inline.
  */
 export async function fetchQuota(options: FetchQuotaOptions = {}): Promise<QuotaResult> {
+  const locale = options.locale ?? "zh";
+  const m = messages(locale);
   const proxyUrl = (options.proxyUrl ?? "").trim();
   let key: string;
   try {
@@ -833,12 +881,7 @@ export async function fetchQuota(options: FetchQuotaOptions = {}): Promise<Quota
   }
 
   if (!key) {
-    return {
-      ok: false,
-      message: proxyUrl
-        ? "未配置 Tavily 代理主密钥（请设置 apiKey 插件选项）"
-        : "未配置 Tavily API Key（请设置 TAVILY_API_KEY 或 apiKey 插件选项）",
-    };
+    return { ok: false, message: proxyUrl ? m.missingProxyKey : m.missingKey };
   }
 
   // LOCAL FORK: align the proxy's cached `used_quota` with Tavily's official
@@ -863,32 +906,32 @@ export async function fetchQuota(options: FetchQuotaOptions = {}): Promise<Quota
     });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    return { ok: false, message: `请求失败：${reason}` };
+    return { ok: false, message: m.requestFailed(reason) };
   }
 
   if (response.status === 401) {
     return {
       ok: false,
-      message: proxyUrl ? "代理拒绝了主密钥（401）" : "API Key 被拒绝（401）",
+      message: proxyUrl ? m.unauthorizedProxy : m.unauthorized,
     };
   }
   if (response.status === 429) {
-    return { ok: false, message: `触发限流：${endpointLabel}（10 次 / 10 分钟）` };
+    return { ok: false, message: m.rateLimited(endpointLabel) };
   }
   if (!response.ok) {
-    return { ok: false, message: `${endpointLabel} 返回 HTTP ${response.status}` };
+    return { ok: false, message: m.httpError(endpointLabel, response.status) };
   }
 
   let payload: TavilyUsagePayload | TavilyProxyStatsPayload;
   try {
     payload = (await response.json()) as TavilyUsagePayload | TavilyProxyStatsPayload;
   } catch {
-    return { ok: false, message: `${endpointLabel} 返回的不是有效 JSON` };
+    return { ok: false, message: m.invalidJson(endpointLabel) };
   }
 
   const derived = proxyUrl
-    ? deriveProxySnapshot(payload as TavilyProxyStatsPayload, options.now)
-    : deriveSnapshot(payload as TavilyUsagePayload, options.now);
+    ? deriveProxySnapshot(payload as TavilyProxyStatsPayload, options.now, locale)
+    : deriveSnapshot(payload as TavilyUsagePayload, options.now, locale);
 
   // LOCAL FORK: enrich proxy mode with the per-key breakdown.
   //
@@ -911,7 +954,7 @@ export async function fetchQuota(options: FetchQuotaOptions = {}): Promise<Quota
       ok: true,
       snapshot: {
         ...derived.snapshot,
-        poolWarning: `读取池子明细被拒（HTTP ${pool.status}）：主密钥可能已失效`,
+        poolWarning: m.poolDenied(pool.status),
       },
     });
   }

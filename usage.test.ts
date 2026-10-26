@@ -37,6 +37,8 @@ import {
   syncProxyUsage,
 } from "./usage.ts";
 
+import { resolveLocale } from "./i18n.ts";
+
 /** LOCAL FORK: a three-key pool fixture mirroring the proxy's /api/keys shape. */
 const PROXY_KEYS = {
   items: [
@@ -346,6 +348,54 @@ test("expandOptionValue refuses an oversized file reference", () => {
     () => expandOptionValue("{file:/nope}", { readFile }),
     /超过 512 上限/,
   );
+});
+
+test("resolveLocale honours an explicit option, then the environment", () => {
+  assert.equal(resolveLocale("zh"), "zh");
+  assert.equal(resolveLocale("en"), "en");
+  assert.equal(resolveLocale("zh-CN"), "zh");
+  assert.equal(resolveLocale("en-GB"), "en");
+  // A non-empty, non-Chinese environment locale means English.
+  assert.equal(resolveLocale("auto", { LANG: "en_US.UTF-8" }), "en");
+  assert.equal(resolveLocale(undefined, { LC_ALL: "zh_CN.UTF-8" }), "zh");
+});
+
+test("English locale renders the sidebar in English and keeps the 36-column width", () => {
+  const snapshot = {
+    planName: "Tavily pool (19 keys)",
+    used: 12857,
+    limit: 19000,
+    remaining: 6143,
+    percentRemaining: (6143 / 19000) * 100,
+    updatedAt: 0,
+    pool: derivePoolInfo(PROXY_KEYS),
+  };
+  const quota = formatQuotaLine(snapshot, undefined, "en");
+  const pool = formatPoolLine(snapshot.pool, undefined, "en");
+  assert.match(quota, /32% left$/);
+  assert.equal(displayWidth(quota), SIDEBAR_WIDTH);
+  assert.equal(displayWidth(pool), SIDEBAR_WIDTH);
+  assert.match(pool, /\d+\/\d+ keys$/);
+  assert.match(formatResetLine(0, "en"), /^reset /);
+  assert.match(formatRemaining(snapshot, "en"), /^6143 credits left$/);
+});
+
+test("English detail view words the same rows differently", () => {
+  const snapshot = {
+    planName: "pool",
+    used: 12857,
+    limit: 19000,
+    remaining: 6143,
+    percentRemaining: (6143 / 19000) * 100,
+    updatedAt: 0,
+    pool: derivePoolInfo(PROXY_KEYS),
+  };
+  const lines = formatPoolDetailLines(snapshot, 0, "en");
+  assert.match(lines[0], /6143\/19000 left/);
+  assert.match(lines[1], /usable · .* spent/);
+  assert.ok(lines.some((line) => line.includes("← last")));
+  // Chinese stays the default and is untouched.
+  assert.match(formatPoolDetailLines(snapshot, 0)[0], /^剩余 6143\/19000/);
 });
 
 test("fetchQuota reports a missing key without calling fetch", async () => {
