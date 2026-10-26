@@ -8,6 +8,15 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(deps)"
+    # These track the OpenCode runtime and pin their peers exactly:
+    # @opentui/solid requires solid-js 1.9.12 exactly, so blind bumps produce
+    # ERESOLVE. Upgrade them by hand, together, and test the TUI.
+    ignore:
+      - dependency-name: "@opentui/core"
+      - dependency-name: "@opentui/solid"
+      # @babel/core 8 has no matching preset-typescript/solid yet.
+      - dependency-name: "@babel/core"
+        update-types: ["version-update:semver-major"]
     groups:
       dev-dependencies:
         dependency-type: development
