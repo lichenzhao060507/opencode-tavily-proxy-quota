@@ -1,0 +1,77 @@
+name: Bug report
+description: The sidebar, the refresh button, or /tavily-quota does not behave as expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not paste API keys.** Replace them with `tvly-...` / `<master-key>`.
+        For anything security-sensitive, use
+        [private reporting](https://github.com/lichenzhao060507/opencode-tavily-proxy-quota/security/advisories/new)
+        instead of this form.
+
+  - type: input
+    id: opencode-version
+    attributes:
+      label: OpenCode version
+      description: Output of `opencode --version`.
+      placeholder: 2.x.y
+    validations:
+      required: true
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version or commit
+      description: The `version` in package.json, or the commit you built `dist/` from.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - Direct — reads api.tavily.com/usage
+        - Proxy pool — proxyUrl is set
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: |
+        Paste the exact sidebar lines or toast text. If a bar or number looks
+        wrong, say which one and what you expected the number to be.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: |
+        From `~/.local/share/opencode/log/opencode.log`. Search for
+        `tavily-quota`. Redact keys and tokens.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I removed all API keys and tokens from this report.
+          required: true
+        - label: I am running the plugin built from this repository (not a stale `dist/`).
+          required: false

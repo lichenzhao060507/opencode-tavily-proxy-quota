@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Runtime and build dependencies. Group dev-only bumps so one PR covers them.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      dev-dependencies:
+        dependency-type: development
+      production-dependencies:
+        dependency-type: production
+
+  # Keep the workflow actions current; v4 -> v7 was already needed once.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "chore(ci)"

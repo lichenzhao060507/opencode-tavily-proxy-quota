@@ -1,0 +1,37 @@
+name: Feature request
+description: Suggest a change to what the sidebar shows or how quota is read.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: Describe the situation, not only the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like to happen
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Where does this belong
+      options:
+        - This fork only (pool behaviour, per-key detail, Chinese UI)
+        - Also useful upstream (single-key /usage, generic plugin plumbing)
+        - Not sure
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        If the change applies upstream it may be better offered to
+        [54cwh/opencode-tavily-proxy-quota](https://github.com/54cwh/opencode-tavily-proxy-quota)
+        or [cardin/opencode-tavily-quota](https://github.com/cardin/opencode-tavily-quota),
+        where more people would see it.

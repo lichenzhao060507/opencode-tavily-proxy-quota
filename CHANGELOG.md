@@ -29,6 +29,7 @@ Security and correctness hardening after a local audit.
 ### Added
 
 - CI workflow: typecheck, tests, build, and a dist syntax check on Node 24.
+- Issue forms (bug report / feature request), Dependabot config.
 - `SECURITY.md`, `CONTRIBUTING.md`, `.gitattributes`, this changelog.
 - 5 regression tests (57 → 62): pooled precedence, proxy-mode bearer token,
   multi-line and oversized file references, and `/api/keys` 401.

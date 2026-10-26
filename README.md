@@ -22,11 +22,15 @@ from `api.tavily.com/usage`.
 
 ```
 Tavily
-距重置 22天3小时
-[██████████████████░░░░░░]  74% 剩余
-[▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░]  8/9 个
-6648/9000 · 最后 #8 · 1 个耗尽
+刷新额度  距重置 5天16小时
+████████░░░░░░░░░░░░░░░░░   32% 剩余
+▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░   16/19 个
+6143/19000 · 最后 #19 · 3 个耗尽
 ```
+
+The first bar is monthly credits left; the second counts keys in the proxy pool
+that can still serve a request. Both are 25 cells plus a right-aligned label
+column, so they line up with OpenCode's built-in quota section.
 
 
 ## Install
