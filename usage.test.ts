@@ -516,25 +516,66 @@ test("syncProxyUsage posts then polls the shared job", async () => {
     { status: "running", total: 2, completed: 0 },
     { status: "completed", total: 2, completed: 2, succeeded: 2, failed: 0 },
   ];
-  const ok = await syncProxyUsage("http://127.0.0.1:27890", "master-key", {
+  const outcome = await syncProxyUsage("http://127.0.0.1:27890", "master-key", {
     syncTimeoutMs: 5_000,
     fetchImpl: (async (input: unknown, init?: RequestInit) => {
       calls.push(`${init?.method ?? "GET"} ${String(input)}`);
       return jsonResponse(responses.shift() ?? { status: "completed" });
     }) as typeof fetch,
   });
-  assert.equal(ok, true);
+  assert.equal(outcome.kind, "completed");
+  assert.equal(outcome.succeeded, 2);
+  assert.equal(outcome.failed, 0);
   assert.deepEqual(calls, [
     `POST http://127.0.0.1:27890${PROXY_SYNC_PATH}`,
     `GET http://127.0.0.1:27890${PROXY_SYNC_PATH}`,
   ]);
 });
 
-test("syncProxyUsage returns false when the proxy rejects the master key", async () => {
-  const ok = await syncProxyUsage("http://127.0.0.1:27890", "master-key", {
+test("syncProxyUsage reports failure when every key came back 429", async () => {
+  // This is the real shape the proxy returns after a burst: status
+  // "completed", succeeded 0, failed 19. Treating that as success is what makes
+  // the sidebar show frozen numbers with no warning.
+  const outcome = await syncProxyUsage("http://127.0.0.1:27890", "master-key", {
+    fetchImpl: (async () =>
+      jsonResponse({
+        status: "completed",
+        total: 19,
+        completed: 19,
+        succeeded: 0,
+        failed: 19,
+        items: [
+          {
+            id: 19,
+            status: "error",
+            error:
+              'upstream status 429: {"detail": {"error": "Your request has been blocked due to excessive requests."}}',
+          },
+        ],
+      })) as typeof fetch,
+  });
+  assert.equal(outcome.kind, "failed");
+  assert.equal(outcome.failed, 19);
+  assert.equal(outcome.succeeded, 0);
+  assert.match(outcome.error ?? "", /429/);
+  // The error must be a single line so it fits in a toast.
+  assert.doesNotMatch(outcome.error ?? "", /\n/);
+});
+
+test("syncProxyUsage reports a partial refresh", async () => {
+  const outcome = await syncProxyUsage("http://127.0.0.1:27890", "master-key", {
+    fetchImpl: (async () =>
+      jsonResponse({ status: "completed", total: 4, succeeded: 3, failed: 1 })) as typeof fetch,
+  });
+  assert.equal(outcome.kind, "partial");
+  assert.equal(outcome.succeeded, 3);
+});
+
+test("syncProxyUsage reports unavailable when the proxy rejects the master key", async () => {
+  const outcome = await syncProxyUsage("http://127.0.0.1:27890", "master-key", {
     fetchImpl: (async () => new Response("nope", { status: 401 })) as typeof fetch,
   });
-  assert.equal(ok, false);
+  assert.equal(outcome.kind, "unavailable");
 });
 
 test("fetchQuota syncs official usage before reading stats when asked", async () => {
@@ -554,6 +595,10 @@ test("fetchQuota syncs official usage before reading stats when asked", async ()
     }) as typeof fetch,
   });
   assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.sync?.kind, "completed");
+    assert.equal(result.sync?.succeeded, 1);
+  }
   assert.deepEqual(calls, [
     `POST http://127.0.0.1:27890${PROXY_SYNC_PATH}`,
     `GET http://127.0.0.1:27890${PROXY_STATS_PATH}`,

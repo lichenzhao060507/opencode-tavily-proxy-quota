@@ -6,6 +6,38 @@ upstream package version until this fork diverges meaningfully.
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-10-26
+
+Refreshing was slow and quietly wrong. Both are fixed.
+
+### Fixed
+
+- **Manual refresh no longer freezes the sidebar for 10–20 s.** It paints the
+  proxy's cached numbers first (measured ~50 ms warm), then runs the Tavily
+  sync in the background and repaints when it finishes.
+- **A failed sync is no longer reported as success.** The proxy marks the job
+  `completed` even when every key came back `429`; the plugin now reads
+  `succeeded`/`failed` as well. On failure the sidebar shows
+  `⚠ 同步失败 19/19，数字为缓存` and the toast carries the first upstream error.
+- **Proxy mode polls every 60 s** instead of every 10 minutes. Direct mode keeps
+  the 10-minute interval because `api.tavily.com/usage` allows 10 requests per
+  10 minutes; `<proxyUrl>/api/stats` is local, so that limit does not apply.
+
+### Changed
+
+- `syncProxyUsage` returns a `SyncOutcome`
+  (`completed` / `partial` / `failed` / `timeout` / `unavailable`) instead of a
+  boolean, and no longer treats "job finished" as "keys refreshed".
+- `fetchQuota` attaches that outcome as `result.sync` when `sync: true`.
+
+### Notes
+
+A refresh re-reads every key's `/usage` on Tavily, one key at a time — with a
+~20-key pool that is ~19 upstream requests per click. Several refreshes in quick
+succession trip Tavily's rate limit (`429`), after which syncs fail until the
+window resets. The proxy's own auto-sync is the primary source of freshness;
+treat the button as a manual override, not a polling mechanism.
+
 ## [1.1.1] — 2026-10-26
 
 Security and correctness hardening after a local audit.

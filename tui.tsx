@@ -30,6 +30,7 @@ import {
   formatQuotaLine,
   formatResetLine,
   type QuotaSnapshot,
+  type SyncOutcome,
 } from "./usage";
 import type { QuotaResult } from "./usage";
 import { TavilyQuotaRpc } from "./rpc";
@@ -37,9 +38,14 @@ import { TavilyQuotaRpc } from "./rpc";
 type Context = Plugin.Context;
 
 export const PLUGIN_ID = "opencode-tavily-quota";
-// Tavily's `/usage` endpoint allows at most 10 requests per 10 minutes, so poll
-// once per window and rely on the `/tavily-quota` command for on-demand reads.
+// Direct mode hits Tavily's `/usage`, which allows at most 10 requests per 10
+// minutes, so poll once per window and rely on `/tavily-quota` for on-demand
+// reads.
 const REFRESH_INTERVAL_MS = 600_000;
+// Proxy mode only reads the local proxy's cached `/api/stats` (~0.5 s, no
+// Tavily traffic), so it can afford to stay much closer to real time. The
+// proxy's own auto-sync decides how fresh those numbers are.
+const PROXY_REFRESH_INTERVAL_MS = 60_000;
 // Neutral wash behind the refresh button, borrowed from the wesearch plugin's
 // segmented buttons so the control reads the same way in the sidebar.
 const BUTTON_WASH_IDLE = RGBA.fromValues(0.5, 0.5, 0.5, 0.2);
@@ -48,7 +54,7 @@ const REFRESH_BUTTON_WIDTH = 10;
 
 type ViewState =
   | { status: "loading" }
-  | { status: "ready"; snapshot: QuotaSnapshot }
+  | { status: "ready"; snapshot: QuotaSnapshot; sync?: SyncOutcome }
   | { status: "error"; message: string };
 
 type ThemeColors = {
@@ -95,7 +101,42 @@ export function buildLines(state: ViewState, now: number = Date.now()): string[]
   // LOCAL FORK: `/api/keys` rejected the master key. The headline numbers above
   // may be cached, so say so instead of rendering a silently stale pool.
   if (snapshot.poolWarning) lines.push(`⚠ ${snapshot.poolWarning}`);
+  // A sync that did not actually refresh the keys must not look like one that
+  // did: the numbers above are whatever the proxy cached.
+  const sync = state.sync;
+  if (sync && sync.kind !== "completed") {
+    const label =
+      sync.kind === "partial"
+        ? `同步部分失败 ${sync.failed}/${sync.total}`
+        : sync.kind === "failed"
+          ? `同步失败 ${sync.failed}/${sync.total}`
+          : sync.kind === "timeout"
+            ? "同步超时"
+            : "同步未送达";
+    lines.push(`⚠ ${label}，数字为缓存`);
+  }
   return lines;
+}
+
+/**
+ * One-line verdict for the toast. `syncProxyUsage` already separates "the job
+ * finished" from "the keys were refreshed"; this only words it.
+ */
+export function syncSummary(sync: SyncOutcome): string {
+  const seconds = `${(sync.elapsedMs / 1000).toFixed(0)}s`;
+  const head =
+    sync.kind === "completed"
+      ? `已同步 ${sync.succeeded}/${sync.total}`
+      : sync.kind === "partial"
+        ? `部分同步 ${sync.succeeded}/${sync.total}，${sync.failed} 把失败`
+        : sync.kind === "failed"
+          ? `同步失败：${sync.failed}/${sync.total} 把全部失败`
+          : sync.kind === "timeout"
+            ? `同步超时（${seconds}）`
+            : "同步请求未送达代理";
+  const tail = sync.kind === "completed" ? ` · ${seconds}` : "";
+  const detail = sync.error ? `\n${sync.error}` : "";
+  return `${head}${tail}${detail}`;
 }
 
 export function TavilyQuotaSidebar(props: {
@@ -185,9 +226,16 @@ function TavilyQuotaCommands(props: {
           const next = await props.refresh({ sync: true });
           // LOCAL FORK: multi-line breakdown. Falls back to the original
           // one-line summary when the proxy served no `/api/keys`.
+          const lines =
+            next.status === "ready" ? formatPoolDetailLines(next.snapshot) : [];
+          // Say what the sync actually did. "Completed" is not success: the
+          // proxy finishes the job even when every key came back 429.
+          if (next.status === "ready" && next.sync) {
+            lines.push(syncSummary(next.sync));
+          }
           const message =
             next.status === "ready"
-              ? formatPoolDetailLines(next.snapshot).join("\n")
+              ? lines.join("\n")
               : next.status === "error"
                 ? next.message
                 : "仍在加载…";
@@ -220,31 +268,59 @@ export const TavilyQuotaTuiPlugin = Plugin.define({
     const refreshMs =
       typeof context.options.refreshMs === "number" && context.options.refreshMs > 0
         ? context.options.refreshMs
-        : REFRESH_INTERVAL_MS;
+        : proxyUrl
+          ? PROXY_REFRESH_INTERVAL_MS
+          : REFRESH_INTERVAL_MS;
 
     let disposed = false;
     let inFlight = false;
     const [busy, setBusy] = createSignal(false);
 
+    /**
+     * LOCAL FORK: two phases, because a proxy sync takes ~10–20 s and the user
+     * should not stare at "刷新中…" for that long.
+     *
+     *   1. read the proxy's cached numbers and paint them (~0.5 s)
+     *   2. only if asked, run the Tavily sync and repaint with its verdict
+     *
+     * The cached numbers are honest either way — phase 2 either refreshes them
+     * or reports that it could not.
+     */
     const refresh = async (options: { sync?: boolean } = {}): Promise<ViewState> => {
       if (inFlight) return state();
       inFlight = true;
       setBusy(true);
-      try {
-        const result = await fetchQuotaWithFallback({
+
+      const load = (sync: boolean) =>
+        fetchQuotaWithFallback({
           apiKey,
           proxyUrl,
-          sync: options.sync,
-          remote: () => remote.usage({}, {
-            location: context.location ?? context.data.location.default(),
-          }) as Promise<QuotaResult>,
+          sync,
+          remote: () =>
+            remote.usage({}, {
+              location: context.location ?? context.data.location.default(),
+            }) as Promise<QuotaResult>,
         });
+
+      try {
+        const cached = await load(false);
         if (!disposed) {
           setState(
-            result.ok
-              ? { status: "ready", snapshot: result.snapshot }
-              : { status: "error", message: result.message },
+            cached.ok
+              ? { status: "ready", snapshot: cached.snapshot }
+              : { status: "error", message: cached.message },
           );
+        }
+
+        if (options.sync && proxyUrl) {
+          const synced = await load(true);
+          if (!disposed) {
+            setState(
+              synced.ok
+                ? { status: "ready", snapshot: synced.snapshot, sync: synced.sync }
+                : { status: "error", message: synced.message },
+            );
+          }
         }
       } catch (error) {
         // `fetchQuota` is written never to throw, but a rejected promise here

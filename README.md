@@ -183,10 +183,34 @@ Notes:
   to a raw Tavily key when using a proxy.
 - With `proxyUrl` set the plugin never calls `api.tavily.com` directly.
 
+### Refresh behaviour
+
+Proxy mode reads the local `<proxyUrl>/api/stats` cache, so the sidebar polls
+every **60 seconds** and a refresh paints in well under a second. Direct mode
+reads `api.tavily.com/usage`, which is limited to 10 requests per 10 minutes, so
+it polls every **10 minutes**.
+
+Pressing refresh (button, `/tavily-quota`, or the palette command) adds a
+*sync*: the proxy re-reads every key's `/usage` on Tavily, one key at a time.
+With a ~20-key pool that is ~19 upstream requests and takes 10–20 seconds, so
+the cached numbers are painted first and the sync result is reported afterwards.
+
+If the sync fails, the sidebar says so rather than showing a success:
+
+```
+⚠ 同步失败 19/19，数字为缓存
+```
+
+The proxy marks the job `completed` even when every key returned `429`, so the
+plugin checks `succeeded`/`failed` rather than trusting the job status. Several
+refreshes in quick succession can trip Tavily's rate limit; after that, syncs
+fail until the window resets. The proxy's own auto-sync is the primary source of
+freshness — treat the button as a manual override.
+
 ## Commands
 
-- `/tavily-quota` — slash command that re-fetches and reports the current quota
-  and reset countdown in a toast.
+- `/tavily-quota` — slash command that re-fetches and reports the current quota,
+  the reset countdown, and what the sync actually did.
 - "Refresh Tavily quota" — the same action from the command palette (`Ctrl+P`).
 
 ## Data source

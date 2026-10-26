@@ -157,7 +157,7 @@ export interface PoolInfo {
 }
 
 export type QuotaResult =
-  | { ok: true; snapshot: QuotaSnapshot }
+  | { ok: true; snapshot: QuotaSnapshot; sync?: SyncOutcome }
   | { ok: false; message: string };
 
 export interface FetchQuotaOptions {
@@ -425,29 +425,88 @@ export function proxySyncUrl(proxyUrl: string): string {
 
 /** Shape of the proxy's sync job status (every field optional). */
 export interface ProxySyncStatus {
+  id?: string;
   status?: string;
   total?: number;
   completed?: number;
   succeeded?: number;
   failed?: number;
   error?: string;
+  items?: { id?: number; alias?: string; status?: string; error?: string }[] | null;
+}
+
+/**
+ * LOCAL FORK: what one sync attempt actually achieved.
+ *
+ * The proxy reports `status: "completed"` even when every key failed (a 429
+ * from Tavily, for instance), so the job status alone is not success.
+ * `succeeded`/`failed` have to be read too — a caller that only checks
+ * `completed` presents a failed sync as a good one, and the sidebar then shows
+ * frozen numbers with no hint that they are stale.
+ */
+export interface SyncOutcome {
+  kind: "completed" | "partial" | "failed" | "timeout" | "unavailable";
+  /** Keys the proxy tried to refresh. */
+  total: number;
+  succeeded: number;
+  failed: number;
+  elapsedMs: number;
+  /** First distinct per-key upstream error, collapsed to one line. */
+  error?: string;
+}
+
+/** Collapse the per-key errors to the first one, short enough for a toast. */
+function firstSyncError(items: ProxySyncStatus["items"]): string | undefined {
+  if (!Array.isArray(items)) return undefined;
+  for (const item of items) {
+    const raw = typeof item?.error === "string" ? item.error.trim() : "";
+    if (!raw) continue;
+    const oneLine = raw.replace(/\s+/g, " ");
+    return oneLine.length > 120 ? `${oneLine.slice(0, 117)}...` : oneLine;
+  }
+  return undefined;
+}
+
+function classifySync(status: ProxySyncStatus, elapsedMs: number): SyncOutcome {
+  const total = finite(status.total) ?? 0;
+  const succeeded = finite(status.succeeded) ?? 0;
+  const failed = finite(status.failed) ?? Math.max(0, total - succeeded);
+  const base = { total, succeeded, failed, elapsedMs, error: firstSyncError(status.items) };
+  if (status.status !== "completed") return { kind: "timeout", ...base };
+  if (total > 0 && failed >= total) return { kind: "failed", ...base };
+  if (failed > 0) return { kind: "partial", ...base };
+  return { kind: "completed", ...base };
 }
 
 /**
  * LOCAL FORK: ask the proxy to re-read every key's usage from Tavily's
- * `/usage`, then wait for the shared background job to finish. Returns true
- * only when the job completed. Failures are swallowed: callers still read the
- * proxy's cached numbers, which auto-sync keeps reasonably fresh.
+ * `/usage`, then wait for the shared background job to finish.
+ *
+ * Never throws. The outcome distinguishes "the job finished" from "the keys
+ * were refreshed", which is what a caller actually needs.
+ *
+ * This takes ~10–20 s for a pool of ~20 keys because the proxy refreshes them
+ * one at a time, so callers should not block the first paint on it.
  */
 export async function syncProxyUsage(
   proxyUrl: string,
   key: string,
   options: FetchQuotaOptions = {},
-): Promise<boolean> {
+): Promise<SyncOutcome> {
+  const startedAt = Date.now();
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.syncTimeoutMs ?? DEFAULT_SYNC_TIMEOUT_MS;
-  const deadline = Date.now() + timeoutMs;
+  const deadline = startedAt + timeoutMs;
   const url = proxySyncUrl(proxyUrl);
+  const elapsed = () => Date.now() - startedAt;
+  const unavailable = (error: string): SyncOutcome => ({
+    kind: "unavailable",
+    total: 0,
+    succeeded: 0,
+    failed: 0,
+    elapsedMs: elapsed(),
+    error,
+  });
 
   const readStatus = async (response: Response): Promise<ProxySyncStatus | null> => {
     if (!response.ok) return null;
@@ -468,16 +527,16 @@ export async function syncProxyUsage(
       }),
     );
   } catch {
-    return false;
+    return unavailable("同步请求未送达代理");
   }
-  if (!status) return false;
+  if (!status) return unavailable("代理未返回同步状态");
 
   while (status.status === "running") {
     const remaining = deadline - Date.now();
-    if (remaining <= 0) return false;
+    if (remaining <= 0) return classifySync(status, elapsed());
     await new Promise((resolve) => setTimeout(resolve, Math.min(SYNC_POLL_MS, remaining)));
     const budget = deadline - Date.now();
-    if (budget <= 0) return false;
+    if (budget <= 0) return classifySync(status, elapsed());
     try {
       status = await readStatus(
         await fetchImpl(url, {
@@ -486,11 +545,11 @@ export async function syncProxyUsage(
         }),
       );
     } catch {
-      return false;
+      return unavailable("轮询同步状态时连接中断");
     }
-    if (!status) return false;
+    if (!status) return unavailable("代理未返回同步状态");
   }
-  return status.status === "completed";
+  return classifySync(status, elapsed());
 }
 
 /** LOCAL FORK: one entry of `<proxyUrl>/api/keys` (every field optional). */
@@ -783,10 +842,13 @@ export async function fetchQuota(options: FetchQuotaOptions = {}): Promise<Quota
   }
 
   // LOCAL FORK: align the proxy's cached `used_quota` with Tavily's official
-  // credit accounting before reading it. Manual refreshes request this; the
-  // proxy's own auto-sync keeps the cache warm between them.
+  // credit accounting. This is slow (~10–20 s for a ~20-key pool) and can fail
+  // per key, so the outcome is returned to the caller instead of being
+  // discarded -- the TUI renders the cached numbers first and reports the
+  // result afterwards.
+  let syncOutcome: SyncOutcome | undefined;
   if (proxyUrl && options.sync) {
-    await syncProxyUsage(proxyUrl, key, options);
+    syncOutcome = await syncProxyUsage(proxyUrl, key, options);
   }
 
   const endpoint = proxyUrl ? proxyStatsUrl(proxyUrl) : USAGE_URL;
@@ -835,22 +897,25 @@ export async function fetchQuota(options: FetchQuotaOptions = {}): Promise<Quota
   // sidebar with an error -- the breakdown is an extra, not a requirement.
   // A 401/403 is different: the master key was rejected, so the numbers above
   // may be stale. That case is reported as a warning instead of being hidden.
-  if (!derived.ok || !proxyUrl) return derived;
+  const withSync = (result: QuotaResult): QuotaResult =>
+    result.ok && syncOutcome ? { ...result, sync: syncOutcome } : result;
+
+  if (!derived.ok || !proxyUrl) return withSync(derived);
 
   const pool = await fetchPoolInfo(proxyUrl, key, options);
   if (pool.kind === "ok") {
-    return { ok: true, snapshot: { ...derived.snapshot, pool: pool.pool } };
+    return withSync({ ok: true, snapshot: { ...derived.snapshot, pool: pool.pool } });
   }
   if (pool.kind === "denied") {
-    return {
+    return withSync({
       ok: true,
       snapshot: {
         ...derived.snapshot,
         poolWarning: `读取池子明细被拒（HTTP ${pool.status}）：主密钥可能已失效`,
       },
-    };
+    });
   }
-  return derived;
+  return withSync(derived);
 }
 
 type PoolFetch =
