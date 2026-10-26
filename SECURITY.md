@@ -36,7 +36,7 @@ file or your machine.
 
 ## Hardening notes
 
-The 2026-10-26 audit that produced the current behaviour is summarised in
-[README-LOCAL.md](README-LOCAL.md) in the maintainer's local deployment. In
-short: an explicit `pooled` flag for key precedence, a credential-shape guard on
-`{file:...}`, and a visible warning when `/api/keys` authentication fails.
+The 2026-10-26 audit that produced the current behaviour is recorded in
+[CHANGELOG.md](CHANGELOG.md) under `1.1.1`. In short: an explicit `pooled` flag
+for key precedence, a credential-shape guard on `{file:...}`, and a visible
+warning when `/api/keys` authentication fails.

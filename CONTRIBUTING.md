@@ -54,11 +54,11 @@ testable in isolation. Please keep it that way.
 
 ## Builds and the local patch
 
-Earlier versions of this fork required running `patch-usage.mjs` after every
-build, because the key-precedence fix lived only in `dist/`. That fix is now in
-`usage.ts` (see `resolveApiKey`'s `pooled` flag), so a plain `npm run build` is
-sufficient. The script is kept for compatibility and exits 0 when it detects the
-fixed source.
+Earlier versions of this fork required running a `patch-usage.mjs` shim after
+every build, because the key-precedence fix lived only in `dist/`. That fix is
+now in `usage.ts` (see `resolveApiKey`'s `pooled` flag), so a plain
+`npm run build` is sufficient. The shim belongs to the maintainer's local
+deployment and is **not** part of this repository.
 
 ## Commits
 

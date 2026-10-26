@@ -36,8 +36,8 @@ Security and correctness hardening after a local audit.
 ### Changed
 
 - `package.json` repository/bugs/homepage point at this fork.
-- `patch-usage.mjs` is now a compatibility no-op that recognises the fixed
-  source and exits 0.
+- The local `patch-usage.mjs` shim (maintainer's deployment, not part of this
+  repository) is now a compatibility no-op that recognises the fixed source.
 
 ## Fork-specific features (before 1.1.1)
 
