@@ -1,21 +1,33 @@
 # opencode-tavily-proxy-quota
 
+[![CI](https://github.com/lichenzhao060507/opencode-tavily-proxy-quota/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/lichenzhao060507/opencode-tavily-proxy-quota/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](./package.json)
+
 An OpenCode 2 TUI plugin that shows the remaining Tavily API credits in the
 session sidebar.
 
-A fork of
-[cardin/opencode-tavily-quota](https://github.com/cardin/opencode-tavily-quota)
-that adds **pooled-quota support**: point it at a
-[TavilyProxyManager](https://github.com/xuncv/TavilyProxyManager) reverse proxy
-and the sidebar shows credits summed across every key in the proxy's pool,
-instead of a single Tavily account. See [Tavily proxy pool](#tavily-proxy-pool).
-Without `proxyUrl` it behaves exactly like upstream.
+## Lineage
+
+This is a fork of a fork:
+
+| Repository | What it added |
+|---|---|
+| [cardin/opencode-tavily-quota](https://github.com/cardin/opencode-tavily-quota) | original: one key's `/usage` in the sidebar |
+| [54cwh/opencode-tavily-proxy-quota](https://github.com/54cwh/opencode-tavily-proxy-quota) | pooled quota from a [TavilyProxyManager](https://github.com/xuncv/TavilyProxyManager) (`/api/stats`) |
+| this fork | per-key breakdown (`/api/keys`), on-demand sync, clickable refresh, Chinese UI, credential-handling fixes |
+
+Without `proxyUrl` it behaves exactly like the original: one account's credits
+from `api.tavily.com/usage`.
 
 ```
 Tavily
-resets in 6d 12h
-█████████████████████████   84% left
+距重置 22天3小时
+[██████████████████░░░░░░]  74% 剩余
+[▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░]  8/9 个
+6648/9000 · 最后 #8 · 1 个耗尽
 ```
+
 
 ## Install
 
@@ -24,7 +36,7 @@ This fork ships from GitHub, not npm — the npm package
 support:
 
 ```sh
-opencode plugin add github:54cwh/opencode-tavily-proxy-quota
+opencode plugin add github:lichenzhao060507/opencode-tavily-proxy-quota
 ```
 
 Or declare it in `cli.json` to pass options (see
@@ -88,7 +100,7 @@ the API key as a plugin option instead, register the plugin in `cli.json`:
 {
   "plugins": [
     {
-      "package": "github:54cwh/opencode-tavily-proxy-quota",
+      "package": "github:lichenzhao060507/opencode-tavily-proxy-quota",
       "options": {
         "apiKey": "tvly-..."
       }
@@ -112,7 +124,7 @@ reference as `apiKey` to avoid pasting the raw key into `cli.json`:
 {
   "plugins": [
     {
-      "package": "github:54cwh/opencode-tavily-proxy-quota",
+      "package": "github:lichenzhao060507/opencode-tavily-proxy-quota",
       "options": {
         "apiKey": "{file:~/.secrets/tavily-api-key}"
       }
@@ -140,7 +152,7 @@ use to talk to the proxy, not a `tvly-` key):
 {
   "plugins": [
     {
-      "package": "github:54cwh/opencode-tavily-proxy-quota",
+      "package": "github:lichenzhao060507/opencode-tavily-proxy-quota",
       "options": {
         "apiKey": "<proxy master key>",
         "proxyUrl": "http://127.0.0.1:27890"
@@ -204,3 +216,22 @@ npm run typecheck
 
 - The server handles OpenCode-connected credentials and their quota requests;
   the CLI handles local keys and renders TUI slots.
+
+## Security
+
+The Tavily key is never logged, never rendered, and never sent over the plugin
+RPC boundary — only quota numbers cross it. `{file:...}` references are treated
+as credentials and rejected if they are multi-line or longer than 512
+characters. See [SECURITY.md](./SECURITY.md) for scope and private reporting.
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md). Changes are listed in
+[CHANGELOG.md](./CHANGELOG.md).
+
+## License
+
+MIT — see [LICENSE](./LICENSE). Original work by
+[cardin](https://github.com/cardin/opencode-tavily-quota) and
+[54cwh](https://github.com/54cwh/opencode-tavily-proxy-quota); this fork keeps
+the same licence and copyright notices.

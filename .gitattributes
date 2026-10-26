@@ -1,0 +1,14 @@
+# Keep text normalised to LF so the tree behaves the same on Windows and CI.
+* text=auto eol=lf
+
+# Mark binary assets explicitly; `text=auto` can otherwise misdetect them.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+
+# Collapse dist/ and lockfiles in diffs and language stats.
+dist/** linguist-generated=true
+package-lock.json linguist-generated=true -diff
