@@ -1,32 +1,26 @@
 version: 2
 updates:
-  # Runtime and build dependencies. Group dev-only bumps so one PR covers them.
+  # npm version updates are intentionally disabled.
+  #
+  # The runtime packages are dictated by OpenCode, not by us: @opentui/solid
+  # pins solid-js to an exact version, so automated bumps of one without the
+  # other always fail with ERESOLVE. Two of the three Dependabot PRs this repo
+  # received were exactly that. Upgrade these by hand, together, and smoke-test
+  # the TUI.
+  #
+  # Security updates are a separate repository setting and remain enabled, so
+  # advisories still produce PRs.
   - package-ecosystem: npm
     directory: /
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: "chore(deps)"
-    # These track the OpenCode runtime and pin their peers exactly:
-    # @opentui/solid requires solid-js 1.9.12 exactly, so blind bumps produce
-    # ERESOLVE. Upgrade them by hand, together, and test the TUI.
-    ignore:
-      - dependency-name: "@opentui/core"
-      - dependency-name: "@opentui/solid"
-      # @babel/core 8 has no matching preset-typescript/solid yet.
-      - dependency-name: "@babel/core"
-        update-types: ["version-update:semver-major"]
-    groups:
-      dev-dependencies:
-        dependency-type: development
-      production-dependencies:
-        dependency-type: production
+      interval: monthly
+    open-pull-requests-limit: 0
 
-  # Keep the workflow actions current; v4 -> v7 was already needed once.
+  # Workflow actions drift slowly and safely; keep them current.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+    open-pull-requests-limit: 3
     commit-message:
       prefix: "chore(ci)"

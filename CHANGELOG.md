@@ -13,6 +13,10 @@ upstream package version until this fork diverges meaningfully.
 - `publish.yml` now checks for the `NPM_TOKEN` secret before publishing and, when
   it is absent, skips with an actionable job summary instead of failing with a
   bare `ENEEDAUTH`.
+- Dependabot version updates for npm are disabled (`open-pull-requests-limit: 0`).
+  `@opentui/solid` pins `solid-js` exactly, so automated bumps of one without the
+  other always fail; two of the three PRs this repo received were that. Security
+  updates stay enabled. Workflow actions still get monthly bumps.
 
 ## [1.3.2] — 2026-10-27
 
