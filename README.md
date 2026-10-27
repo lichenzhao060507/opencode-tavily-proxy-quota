@@ -55,12 +55,15 @@ without `proxyUrl` the plugin reads a single account's
 
 Pick whichever route suits the person installing it.
 
-### 1. From a local clone (no build, no Node)
+### 1. From a local clone (no build)
 
-`dist/` is committed, so a clone is ready to run:
+`dist/` is committed, so there is nothing to compile. You still need the
+runtime packages the host does not inject:
 
 ```sh
 git clone https://github.com/lichenzhao060507/opencode-tavily-proxy-quota.git
+cd opencode-tavily-proxy-quota
+npm install --omit=dev --ignore-scripts   # ~1 min, runtime deps only
 ```
 
 Then point `cli.json` at the folder (see [Configuration](#configuration)):
@@ -76,7 +79,12 @@ Then point `cli.json` at the folder (see [Configuration](#configuration)):
 }
 ```
 
-This is the route to hand to someone who does not have Node installed.
+Verified: with `--omit=dev` and no build, both root entries import cleanly
+(`index.ts` → `PLUGIN_ID`, `default`; `tui.ts` → `TavilyQuotaTuiPlugin`,
+`buildLines`, …). Skipping `npm install` entirely does **not** work — the plugin
+resolves `@opencode/plugin` and `@opentui/solid` from its own `node_modules`.
+
+This is the route to hand to someone who wants to avoid the babel build step.
 
 ### 2. From GitHub as a package
 
@@ -84,9 +92,12 @@ This is the route to hand to someone who does not have Node installed.
 opencode plugin add github:lichenzhao060507/opencode-tavily-proxy-quota
 ```
 
-The install runs the package's `prepare` build, so this one **does** need Node
-and takes a minute. Add the `options` block to `cli.json` afterwards to pass a
-key.
+The install runs the package's `prepare` build, so this one builds `dist/` from
+source and needs the dev dependencies too. Add the `options` block to
+`cli.json` afterwards to pass a key.
+
+Some OpenCode 2 builds fail this step inside their bundled npm
+(`NpmInstallFailedError`); route 1 is the fallback when that happens.
 
 ### 3. From npm
 

@@ -20,9 +20,11 @@ Distribution only — no behaviour change.
 
 ### Changed
 
-- `dist/` is committed instead of ignored. A clone now runs as-is, which is the
-  route to give someone who does not have Node installed. CI rebuilds and fails
-  if the committed output drifts from the source.
+- `dist/` is committed instead of ignored, so a clone needs no babel build —
+  only `npm install --omit=dev --ignore-scripts` for the runtime packages the
+  host does not inject. A bare clone without `node_modules` does not load:
+  `@opencode/plugin` and `@opentui/solid` must resolve from the plugin directory.
+  CI rebuilds and fails if the committed output drifts from the source.
 - README install section documents all three routes: local clone (no build),
   GitHub package (builds on install), npm.
 
