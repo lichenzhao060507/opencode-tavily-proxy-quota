@@ -6,6 +6,14 @@ upstream package version until this fork diverges meaningfully.
 
 ## [Unreleased]
 
+### Added
+
+- `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1) and a pull request template,
+  filling the gaps in GitHub's community profile.
+- `publish.yml` now checks for the `NPM_TOKEN` secret before publishing and, when
+  it is absent, skips with an actionable job summary instead of failing with a
+  bare `ENEEDAUTH`.
+
 ## [1.3.2] — 2026-10-27
 
 Distribution only — no behaviour change.

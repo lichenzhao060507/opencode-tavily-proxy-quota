@@ -36,7 +36,35 @@ jobs:
             exit 1
           fi
 
+      # Fail *here*, with an actionable message, instead of letting npm produce
+      # a bare ENEEDAUTH further down. The job stays green when the secret is
+      # absent: a missing token is a setup gap, not a broken package.
+      - name: Check for NPM_TOKEN
+        id: token
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Publish skipped: no \`NPM_TOKEN\` secret"
+              echo ""
+              echo "Add one under **Settings → Secrets and variables → Actions**:"
+              echo ""
+              echo "1. On npmjs.com: *Access Tokens* → *Generate New Token* (Automation, or Granular with publish rights)."
+              echo "2. Paste it here as a repository secret named \`NPM_TOKEN\`."
+              echo "3. Re-run this workflow."
+              echo ""
+              echo "Note: this workflow publishes to \`registry.npmjs.org\` explicitly, so a"
+              echo "local mirror such as \`registry.npmmirror.com\` does not affect it."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=Publish skipped::No NPM_TOKEN secret is configured. See the job summary for setup steps."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish
+        if: steps.token.outputs.present == 'true'
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
