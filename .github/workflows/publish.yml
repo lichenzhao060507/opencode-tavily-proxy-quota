@@ -1,0 +1,42 @@
+name: Publish to npm
+
+# Manual on purpose: creating a GitHub release should not fail the repo because
+# an npm token is missing. Run this from the Actions tab once NPM_TOKEN exists.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # npm provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - run: npm run build
+
+      - name: Verify committed dist matches source
+        run: |
+          if ! git diff --quiet -- dist; then
+            echo "::error::dist/ is stale. Run 'npm run build' and commit the result."
+            exit 1
+          fi
+
+      - name: Publish
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

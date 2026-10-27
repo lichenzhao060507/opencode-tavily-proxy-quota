@@ -46,5 +46,15 @@ jobs:
       - name: Build dist
         run: npm run build
 
+      # dist/ is committed so a clone runs without a build. That only stays
+      # true if it matches the source, so fail when a rebuild changes it.
+      - name: Verify committed dist matches source
+        run: |
+          if ! git diff --quiet -- dist; then
+            echo "::error::dist/ is stale. Run 'npm run build' and commit the result."
+            git diff --stat -- dist
+            exit 1
+          fi
+
       - name: Verify dist is importable
         run: node --check dist/usage.js && node --check dist/tui.js && node --check dist/index.js

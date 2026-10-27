@@ -49,19 +49,58 @@ Tavily
 
 ## Install
 
-This fork ships from GitHub, not npm — the npm package
-`@cardinal4/opencode-tavily-quota` is the upstream version without proxy
-support:
+You need OpenCode 2 and a Tavily API key. **The reverse proxy is optional** —
+without `proxyUrl` the plugin reads a single account's
+`api.tavily.com/usage`, which is what most people want.
+
+Pick whichever route suits the person installing it.
+
+### 1. From a local clone (no build, no Node)
+
+`dist/` is committed, so a clone is ready to run:
+
+```sh
+git clone https://github.com/lichenzhao060507/opencode-tavily-proxy-quota.git
+```
+
+Then point `cli.json` at the folder (see [Configuration](#configuration)):
+
+```json title="cli.json"
+{
+  "plugins": [
+    {
+      "package": "/absolute/path/to/opencode-tavily-proxy-quota",
+      "options": { "apiKey": "tvly-..." }
+    }
+  ]
+}
+```
+
+This is the route to hand to someone who does not have Node installed.
+
+### 2. From GitHub as a package
 
 ```sh
 opencode plugin add github:lichenzhao060507/opencode-tavily-proxy-quota
 ```
 
-Or declare it in `cli.json` to pass options (see
-[Configuration](#configuration)). The install runs the package's `prepare`
-build, so the first install compiles `dist/` from source. If a local copy exists
-under `~/.config/opencode/plugins/opencode-tavily-proxy-quota/`, remove it after
-installing the package so the plugin is not loaded twice.
+The install runs the package's `prepare` build, so this one **does** need Node
+and takes a minute. Add the `options` block to `cli.json` afterwards to pass a
+key.
+
+### 3. From npm
+
+Once published:
+
+```sh
+opencode plugin add opencode-tavily-proxy-quota
+```
+
+Add the `options` block to `cli.json` for the key.
+
+> If a copy already exists under
+> `~/.config/opencode/plugins/opencode-tavily-proxy-quota/`, remove it after a
+> package install so the plugin is not loaded twice.
 
 The sidebar follows the built-in quota styling — the heading uses the default
 text color and the body (bar included) uses the muted/subdued text color. A

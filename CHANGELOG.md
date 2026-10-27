@@ -6,6 +6,26 @@ upstream package version until this fork diverges meaningfully.
 
 ## [Unreleased]
 
+## [1.3.2] — 2026-10-27
+
+Distribution only — no behaviour change.
+
+### Added
+
+- `tui.ts` at the repo root. OpenCode loads a directory plugin from entry files
+  at the plugin root and does not read `package.json` exports in that mode, so
+  without this file a path install reported `features: { server: true }` only
+  and the sidebar never rendered.
+- `publish.yml`, a manual npm publish workflow (needs an `NPM_TOKEN` secret).
+
+### Changed
+
+- `dist/` is committed instead of ignored. A clone now runs as-is, which is the
+  route to give someone who does not have Node installed. CI rebuilds and fails
+  if the committed output drifts from the source.
+- README install section documents all three routes: local clone (no build),
+  GitHub package (builds on install), npm.
+
 ## [1.3.1] — 2026-10-26
 
 ### Changed
