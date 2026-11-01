@@ -120,6 +120,10 @@ export function buildLines(
   ]) {
     if (line) lines.push(line);
   }
+  // LOCAL FORK: how old the official numbers are. Always visible in proxy mode,
+  // so freshness does not depend on remembering the last manual refresh.
+  const freshness = cacheAgeLabel(snapshot, now, locale);
+  if (freshness) lines.push(m.syncFreshness(freshness));
   // LOCAL FORK: `/api/keys` rejected the master key. The headline numbers above
   // may be cached, so say so instead of rendering a silently stale pool.
   if (snapshot.poolWarning) lines.push(`⚠ ${snapshot.poolWarning}`);

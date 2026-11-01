@@ -63,6 +63,7 @@ export interface Messages {
   syncCooldownSidebar(minutes: number): string;
   syncCacheAgeMinutes(minutes: number): string;
   syncCacheAgeHours(hours: number): string;
+  syncFreshness(age: string): string;
   syncCompleted(succeeded: number, total: number, seconds: string): string;
   syncPartialSucceeded(succeeded: number, total: number, failed: number): string;
   syncFailedAll(failed: number, total: number): string;
@@ -133,6 +134,7 @@ const ZH: Messages = {
   syncCooldownSidebar: (minutes) => `限流冷却中，${minutes} 分钟后再试`,
   syncCacheAgeMinutes: (minutes) => (minutes <= 0 ? "刚刚" : `${minutes} 分钟前`),
   syncCacheAgeHours: (hours) => `${hours} 小时前`,
+  syncFreshness: (age) => `官方数据 · ${age}`,
   syncCompleted: (succeeded, total, seconds) => `已同步 ${succeeded}/${total} · ${seconds}`,
   syncPartialSucceeded: (succeeded, total, failed) => `部分同步 ${succeeded}/${total}，${failed} 把失败`,
   syncFailedAll: (failed, total) => `同步失败：${failed}/${total} 把全部失败`,
@@ -206,6 +208,7 @@ const EN: Messages = {
   syncCooldownSidebar: (minutes) => `throttled · retry in ${minutes} min`,
   syncCacheAgeMinutes: (minutes) => (minutes <= 0 ? "just now" : `${minutes} min ago`),
   syncCacheAgeHours: (hours) => `${hours} h ago`,
+  syncFreshness: (age) => `official data · ${age}`,
   syncCompleted: (succeeded, total, seconds) => `synced ${succeeded}/${total} · ${seconds}`,
   syncPartialSucceeded: (succeeded, total, failed) => `partly synced ${succeeded}/${total}, ${failed} failed`,
   syncFailedAll: (failed, total) => `sync failed: all ${failed}/${total} keys`,

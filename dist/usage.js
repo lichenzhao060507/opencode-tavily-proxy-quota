@@ -794,9 +794,9 @@ export async function fetchQuota(options = {}) {
 
   // Both reads are optional extras over the documented `/api/stats` surface, so
   // they run together: the sidebar still paints in roughly one round trip. The
-  // auto-sync age is only worth asking for after a manual attempt, when the UI
-  // may have to explain how old the cached numbers are.
-  const [pool, lastOfficialSyncAt] = await Promise.all([fetchPoolInfo(proxyUrl, key, options), options.sync ? fetchLastOfficialSync(proxyUrl, key, options) : Promise.resolve(undefined)]);
+  // auto-sync timestamp is read on every proxy refresh because the sidebar
+  // always shows how old the cached official numbers are.
+  const [pool, lastOfficialSyncAt] = await Promise.all([fetchPoolInfo(proxyUrl, key, options), fetchLastOfficialSync(proxyUrl, key, options)]);
   const base = lastOfficialSyncAt === undefined ? derived.snapshot : {
     ...derived.snapshot,
     lastOfficialSyncAt

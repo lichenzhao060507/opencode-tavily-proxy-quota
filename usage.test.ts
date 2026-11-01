@@ -724,9 +724,10 @@ test("deriveProxySnapshot clamps remaining at zero and errors without a pool quo
 });
 
 test("fetchQuota reads the proxy pool when proxyUrl is set", async () => {
-  // LOCAL FORK: fetchQuota now makes a second, best-effort call to /api/keys.
+  // LOCAL FORK: fetchQuota now makes two best-effort calls after /api/stats --
+  // /api/keys for the pool and /api/settings/auto-sync for the freshness line.
   // Record every request instead of just the last one, so this still asserts
-  // "stats first, then keys" rather than whichever call happened to be last.
+  // "stats first" rather than whichever call happened to be last.
   const urls: string[] = [];
   const authorizations: (string | null)[] = [];
   const result = await fetchQuota({
@@ -738,18 +739,28 @@ test("fetchQuota reads the proxy pool when proxyUrl is set", async () => {
       urls.push(String(input));
       authorizations.push(new Headers(init?.headers).get("authorization"));
       // Only /api/stats has stats; /api/keys is absent on this proxy.
-      return String(input).endsWith(PROXY_KEYS_PATH)
-        ? jsonResponse({ error: "not found" }, 404)
-        : jsonResponse(PROXY_STATS);
+      if (String(input).endsWith(PROXY_KEYS_PATH)) return jsonResponse({ error: "not found" }, 404);
+      if (String(input).endsWith(PROXY_AUTO_SYNC_PATH)) {
+        return jsonResponse({ last_success_at: "2026-11-01T05:33:59Z" });
+      }
+      return jsonResponse(PROXY_STATS);
     }) as typeof fetch,
   });
   assert.deepEqual(urls, [
     `http://127.0.0.1:27890${PROXY_STATS_PATH}`,
     `http://127.0.0.1:27890${PROXY_KEYS_PATH}`,
+    `http://127.0.0.1:27890${PROXY_AUTO_SYNC_PATH}`,
   ]);
-  assert.deepEqual(authorizations, ["Bearer master-key", "Bearer master-key"]);
+  assert.deepEqual(authorizations, [
+    "Bearer master-key",
+    "Bearer master-key",
+    "Bearer master-key",
+  ]);
   assert.equal(result.ok, true);
-  if (result.ok) assert.equal(result.snapshot.remaining, 4843);
+  if (result.ok) {
+    assert.equal(result.snapshot.remaining, 4843);
+    assert.equal(result.snapshot.lastOfficialSyncAt, Date.parse("2026-11-01T05:33:59Z"));
+  }
 });
 
 test("fetchQuota attaches the per-key pool when the proxy serves /api/keys", async () => {
