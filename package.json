@@ -41,13 +41,13 @@
   },
   "homepage": "https://github.com/lichenzhao060507/opencode-tavily-proxy-quota#readme",
   "dependencies": {
-    "@opencode/plugin": "^2.0.7",
-    "@opentui/core": "^0.5.11",
-    "@opentui/solid": "^0.5.11",
-    "solid-js": "1.9.12"
+    "@opencode/plugin": "^2.2.5",
+    "@opentui/core": "^0.8.1",
+    "@opentui/solid": "^0.8.1",
+    "solid-js": "1.9.18"
   },
   "devDependencies": {
-    "@babel/core": "^7.28.0",
+    "@babel/core": "^7.29.6",
     "@babel/preset-typescript": "^7.27.1",
     "@types/node": "^22.0.0",
     "babel-preset-solid": "^1.9.12",
@@ -56,6 +56,10 @@
   },
   "engines": {
     "node": ">=22.0.0"
+  },
+  "overrides": {
+    "glob": "^14.0.3",
+    "minimatch": "^11.0.3"
   },
   "publishConfig": {
     "access": "public"
