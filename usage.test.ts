@@ -26,9 +26,11 @@ import {
   formatResetLine,
   nextMonthlyResetAt,
   progressBar,
+  PROXY_AUTO_SYNC_PATH,
   PROXY_KEYS_PATH,
   PROXY_STATS_PATH,
   PROXY_SYNC_PATH,
+  proxyAutoSyncUrl,
   proxyKeysUrl,
   proxyStatsUrl,
   proxySyncUrl,
@@ -560,6 +562,17 @@ test("proxySyncUrl targets /api/keys/sync", () => {
   assert.equal(proxySyncUrl("http://127.0.0.1:27890/"), `http://127.0.0.1:27890${PROXY_SYNC_PATH}`);
 });
 
+test("proxyAutoSyncUrl targets /api/settings/auto-sync", () => {
+  assert.equal(
+    proxyAutoSyncUrl("http://127.0.0.1:27890"),
+    `http://127.0.0.1:27890${PROXY_AUTO_SYNC_PATH}`,
+  );
+  assert.equal(
+    proxyAutoSyncUrl("http://127.0.0.1:27890/"),
+    `http://127.0.0.1:27890${PROXY_AUTO_SYNC_PATH}`,
+  );
+});
+
 test("syncProxyUsage posts then polls the shared job", async () => {
   const calls: string[] = [];
   const responses = [
@@ -582,10 +595,11 @@ test("syncProxyUsage posts then polls the shared job", async () => {
   ]);
 });
 
-test("syncProxyUsage reports failure when every key came back 429", async () => {
+test("syncProxyUsage reports a throttle when every key came back 429", async () => {
   // This is the real shape the proxy returns after a burst: status
   // "completed", succeeded 0, failed 19. Treating that as success is what makes
-  // the sidebar show frozen numbers with no warning.
+  // the sidebar show frozen numbers with no warning; treating it as a hard
+  // failure overstates it, because the keys themselves are fine.
   const outcome = await syncProxyUsage("http://127.0.0.1:27890", "master-key", {
     fetchImpl: (async () =>
       jsonResponse({
@@ -604,12 +618,30 @@ test("syncProxyUsage reports failure when every key came back 429", async () => 
         ],
       })) as typeof fetch,
   });
-  assert.equal(outcome.kind, "failed");
+  assert.equal(outcome.kind, "rate_limited");
   assert.equal(outcome.failed, 19);
   assert.equal(outcome.succeeded, 0);
   assert.match(outcome.error ?? "", /429/);
   // The error must be a single line so it fits in a toast.
   assert.doesNotMatch(outcome.error ?? "", /\n/);
+});
+
+test("syncProxyUsage keeps a plain failure when the errors are not throttles", async () => {
+  const outcome = await syncProxyUsage("http://127.0.0.1:27890", "master-key", {
+    fetchImpl: (async () =>
+      jsonResponse({
+        status: "completed",
+        total: 2,
+        completed: 2,
+        succeeded: 0,
+        failed: 2,
+        items: [
+          { id: 1, status: "error", error: "upstream status 401: invalid api key" },
+          { id: 2, status: "error", error: "upstream status 402: plan limit reached" },
+        ],
+      })) as typeof fetch,
+  });
+  assert.equal(outcome.kind, "failed");
 });
 
 test("syncProxyUsage reports a partial refresh", async () => {
@@ -641,6 +673,9 @@ test("fetchQuota syncs official usage before reading stats when asked", async ()
         return jsonResponse({ status: "completed", total: 1, completed: 1, succeeded: 1, failed: 0 });
       }
       if (String(input).endsWith(PROXY_KEYS_PATH)) return jsonResponse({ items: [] });
+      if (String(input).endsWith(PROXY_AUTO_SYNC_PATH)) {
+        return jsonResponse({ last_success_at: "2026-11-01T05:33:59Z" });
+      }
       return jsonResponse(PROXY_STATS);
     }) as typeof fetch,
   });
@@ -648,11 +683,14 @@ test("fetchQuota syncs official usage before reading stats when asked", async ()
   if (result.ok) {
     assert.equal(result.sync?.kind, "completed");
     assert.equal(result.sync?.succeeded, 1);
+    // The throttle message needs the age of the cached official numbers.
+    assert.equal(result.snapshot.lastOfficialSyncAt, Date.parse("2026-11-01T05:33:59Z"));
   }
   assert.deepEqual(calls, [
     `POST http://127.0.0.1:27890${PROXY_SYNC_PATH}`,
     `GET http://127.0.0.1:27890${PROXY_STATS_PATH}`,
     `GET http://127.0.0.1:27890${PROXY_KEYS_PATH}`,
+    `GET http://127.0.0.1:27890${PROXY_AUTO_SYNC_PATH}`,
   ]);
 });
 

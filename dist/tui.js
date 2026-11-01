@@ -57,6 +57,19 @@ function readThemeColors(context) {
     textMuted: text.subdued ?? text.muted
   };
 }
+
+/**
+ * LOCAL FORK: how old the numbers on screen are, worded for the throttle line.
+ * Empty when the proxy did not report a last successful sync.
+ */
+function cacheAgeLabel(snapshot, now, locale) {
+  const m = messages(locale);
+  const at = snapshot.lastOfficialSyncAt;
+  if (at === undefined || !Number.isFinite(at)) return "";
+  const minutes = Math.max(0, Math.round((now - at) / 60_000));
+  if (minutes < 60) return m.syncCacheAgeMinutes(minutes);
+  return m.syncCacheAgeHours(Math.round(minutes / 60));
+}
 export function buildLines(state, now = Date.now(), locale = "zh") {
   const m = messages(locale);
   if (state.status === "loading") {
@@ -81,7 +94,14 @@ export function buildLines(state, now = Date.now(), locale = "zh") {
   // A sync that did not actually refresh the keys must not look like one that
   // did: the numbers above are whatever the proxy cached.
   const sync = state.sync;
-  if (sync && sync.kind !== "completed") {
+  if (sync?.kind === "rate_limited") {
+    // Throttling is not a broken setup: the proxy just could not refresh in
+    // time. Say so quietly and name the age of what is on screen.
+    lines.push(`⏳ ${m.syncRateLimitedSidebar(cacheAgeLabel(snapshot, now, locale))}`);
+  } else if (sync?.kind === "cooldown") {
+    const minutes = Math.max(1, Math.ceil((sync.retryInMs ?? 0) / 60_000));
+    lines.push(`⏳ ${m.syncCooldownSidebar(minutes)}`);
+  } else if (sync && sync.kind !== "completed") {
     const label = sync.kind === "partial" ? m.syncPartialSidebar(sync.failed, sync.total) : sync.kind === "failed" ? m.syncFailedSidebar(sync.failed, sync.total) : sync.kind === "timeout" ? m.syncTimeoutSidebar : m.syncUnavailableSidebar;
     lines.push(`⚠ ${label}${m.syncCachedSuffix}`);
   }
@@ -92,11 +112,11 @@ export function buildLines(state, now = Date.now(), locale = "zh") {
  * One-line verdict for the toast. `syncProxyUsage` already separates "the job
  * finished" from "the keys were refreshed"; this only words it.
  */
-export function syncSummary(sync, locale = "zh") {
+export function syncSummary(sync, locale = "zh", cacheAge = "") {
   const m = messages(locale);
   const seconds = `${(sync.elapsedMs / 1000).toFixed(0)}s`;
-  const head = sync.kind === "completed" ? m.syncCompleted(sync.succeeded, sync.total, seconds) : sync.kind === "partial" ? m.syncPartialSucceeded(sync.succeeded, sync.total, sync.failed) : sync.kind === "failed" ? m.syncFailedAll(sync.failed, sync.total) : sync.kind === "timeout" ? m.syncTimedOut(seconds) : m.syncNotDelivered;
-  const detail = sync.error ? `\n${sync.error}` : "";
+  const head = sync.kind === "completed" ? m.syncCompleted(sync.succeeded, sync.total, seconds) : sync.kind === "partial" ? m.syncPartialSucceeded(sync.succeeded, sync.total, sync.failed) : sync.kind === "rate_limited" ? m.syncRateLimitedToast(cacheAge) : sync.kind === "cooldown" ? m.syncCooldownToast(Math.max(1, Math.ceil((sync.retryInMs ?? 0) / 60_000))) : sync.kind === "failed" ? m.syncFailedAll(sync.failed, sync.total) : sync.kind === "timeout" ? m.syncTimedOut(seconds) : m.syncNotDelivered;
+  const detail = sync.error && sync.kind !== "rate_limited" ? `\n${sync.error}` : "";
   return `${head}${detail}`;
 }
 export function TavilyQuotaSidebar(props) {
@@ -266,6 +286,12 @@ export const TavilyQuotaTuiPlugin = Plugin.define({
     let disposed = false;
     let inFlight = false;
     const [busy, setBusy] = createSignal(false);
+    // LOCAL FORK: a manual sync fires the whole pool at once, and Tavily
+    // throttles that burst when it lands close to the proxy's own auto-sync.
+    // After one throttled attempt, answer clicks from cache for a few minutes
+    // instead of re-tripping the limiter.
+    const SYNC_COOLDOWN_MS = 5 * 60_000;
+    let syncNotBefore = 0;
 
     /**
      * LOCAL FORK: two phases, because a proxy sync takes ~10–20 s and the user
@@ -302,6 +328,23 @@ export const TavilyQuotaTuiPlugin = Plugin.define({
           });
         }
         if (options.sync && proxyUrl) {
+          const waitMs = syncNotBefore - Date.now();
+          if (waitMs > 0) {
+            if (!disposed) {
+              setState(prev => prev.status === "ready" ? {
+                ...prev,
+                sync: {
+                  kind: "cooldown",
+                  total: 0,
+                  succeeded: 0,
+                  failed: 0,
+                  elapsedMs: 0,
+                  retryInMs: waitMs
+                }
+              } : prev);
+            }
+            return state();
+          }
           const synced = await load(true);
           if (!disposed) {
             setState(synced.ok ? {
@@ -312,6 +355,9 @@ export const TavilyQuotaTuiPlugin = Plugin.define({
               status: "error",
               message: synced.message
             });
+          }
+          if (synced.ok && synced.sync) {
+            syncNotBefore = synced.sync.kind === "rate_limited" || synced.sync.kind === "failed" ? Date.now() + SYNC_COOLDOWN_MS : 0;
           }
         }
       } catch (error) {
@@ -341,7 +387,9 @@ export const TavilyQuotaTuiPlugin = Plugin.define({
       const current = state();
       const view = current.status === "loading" ? await refresh() : current;
       const lines = view.status === "ready" ? formatPoolDetailLines(view.snapshot, Date.now(), locale) : [];
-      if (view.status === "ready" && view.sync) lines.push(syncSummary(view.sync, locale));
+      if (view.status === "ready" && view.sync) {
+        lines.push(syncSummary(view.sync, locale, cacheAgeLabel(view.snapshot, Date.now(), locale)));
+      }
       const message = view.status === "ready" ? lines.join("\n") : view.status === "error" ? view.message : m.stillLoading;
       // Tie the toast to the open session so the host can title it and offer to
       // open it if the session's family is not on screen.

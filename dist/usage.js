@@ -39,6 +39,14 @@ export const PROXY_KEYS_PATH = "/api/keys";
  * returns whatever the proxy last counted.
  */
 export const PROXY_SYNC_PATH = "/api/keys/sync";
+/**
+ * LOCAL FORK: the proxy's auto-sync settings and last-run timestamps.
+ *
+ * Not part of the upstream contract either. Only `last_success_at` is read, to
+ * tell the user how old the cached official numbers are when a manual sync is
+ * throttled. Any failure degrades to "age unknown".
+ */
+export const PROXY_AUTO_SYNC_PATH = "/api/settings/auto-sync";
 export const DEFAULT_TIMEOUT_MS = 15_000;
 export const DEFAULT_SYNC_TIMEOUT_MS = 60_000;
 const SYNC_POLL_MS = 500;
@@ -292,6 +300,13 @@ export function proxySyncUrl(proxyUrl) {
   return `${proxyUrl.trim().replace(/\/+$/, "")}${PROXY_SYNC_PATH}`;
 }
 
+/** LOCAL FORK: build the `<proxyUrl>/api/settings/auto-sync` URL. */
+export function proxyAutoSyncUrl(proxyUrl) {
+  return `${proxyUrl.trim().replace(/\/+$/, "")}${PROXY_AUTO_SYNC_PATH}`;
+}
+
+/** LOCAL FORK: shape of `GET <proxyUrl>/api/settings/auto-sync` (all optional). */
+
 /** Shape of the proxy's sync job status (every field optional). */
 
 /**
@@ -303,6 +318,27 @@ export function proxySyncUrl(proxyUrl) {
  * `completed` presents a failed sync as a good one, and the sidebar then shows
  * frozen numbers with no hint that they are stale.
  */
+
+/**
+ * LOCAL FORK: Tavily answers `429` with "your request has been blocked due to
+ * excessive requests" when the proxy fires the whole pool at once. That is a
+ * throttle, not a broken key: the cached numbers are merely stale, so callers
+ * soften the message instead of painting a hard failure.
+ */
+const RATE_LIMIT_PATTERN = /\b429\b|excessive requests|rate.?limit|too many requests/i;
+
+/** True when every per-key error the proxy reported is a throttle. */
+function allItemsRateLimited(items) {
+  if (!Array.isArray(items) || items.length === 0) return false;
+  let sawError = false;
+  for (const item of items) {
+    const raw = typeof item?.error === "string" ? item.error.trim() : "";
+    if (!raw) continue;
+    sawError = true;
+    if (!RATE_LIMIT_PATTERN.test(raw)) return false;
+  }
+  return sawError;
+}
 
 /** Collapse the per-key errors to the first one, short enough for a toast. */
 function firstSyncError(items) {
@@ -330,10 +366,12 @@ function classifySync(status, elapsedMs) {
     kind: "timeout",
     ...base
   };
-  if (total > 0 && failed >= total) return {
-    kind: "failed",
-    ...base
-  };
+  if (total > 0 && failed >= total) {
+    return {
+      kind: allItemsRateLimited(status.items) ? "rate_limited" : "failed",
+      ...base
+    };
+  }
   if (failed > 0) return {
     kind: "partial",
     ...base
@@ -753,12 +791,21 @@ export async function fetchQuota(options = {}) {
     sync: syncOutcome
   } : result;
   if (!derived.ok || !proxyUrl) return withSync(derived);
-  const pool = await fetchPoolInfo(proxyUrl, key, options);
+
+  // Both reads are optional extras over the documented `/api/stats` surface, so
+  // they run together: the sidebar still paints in roughly one round trip. The
+  // auto-sync age is only worth asking for after a manual attempt, when the UI
+  // may have to explain how old the cached numbers are.
+  const [pool, lastOfficialSyncAt] = await Promise.all([fetchPoolInfo(proxyUrl, key, options), options.sync ? fetchLastOfficialSync(proxyUrl, key, options) : Promise.resolve(undefined)]);
+  const base = lastOfficialSyncAt === undefined ? derived.snapshot : {
+    ...derived.snapshot,
+    lastOfficialSyncAt
+  };
   if (pool.kind === "ok") {
     return withSync({
       ok: true,
       snapshot: {
-        ...derived.snapshot,
+        ...base,
         pool: pool.pool
       }
     });
@@ -767,12 +814,15 @@ export async function fetchQuota(options = {}) {
     return withSync({
       ok: true,
       snapshot: {
-        ...derived.snapshot,
+        ...base,
         poolWarning: m.poolDenied(pool.status)
       }
     });
   }
-  return withSync(derived);
+  return withSync({
+    ok: true,
+    snapshot: base
+  });
 }
 /**
  * LOCAL FORK: best-effort `<proxyUrl>/api/keys` read. Returns `absent` for
@@ -809,5 +859,30 @@ async function fetchPoolInfo(proxyUrl, key, options) {
     return {
       kind: "absent"
     };
+  }
+}
+
+/**
+ * LOCAL FORK: best-effort `<proxyUrl>/api/settings/auto-sync` read, reduced to
+ * the one field the sidebar needs: when the official numbers were last
+ * refreshed. Every failure returns `undefined` ("age unknown") because a proxy
+ * that does not implement the endpoint must keep working unchanged.
+ */
+async function fetchLastOfficialSync(proxyUrl, key, options) {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  try {
+    const response = await fetchImpl(proxyAutoSyncUrl(proxyUrl), {
+      headers: {
+        Authorization: `Bearer ${key}`
+      },
+      signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+    });
+    if (!response.ok) return undefined;
+    const payload = await response.json();
+    const raw = typeof payload.last_success_at === "string" ? payload.last_success_at : "";
+    const at = Date.parse(raw);
+    return Number.isFinite(at) ? at : undefined;
+  } catch {
+    return undefined;
   }
 }

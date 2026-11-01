@@ -59,11 +59,17 @@ export interface Messages {
   syncTimeoutSidebar: string;
   syncUnavailableSidebar: string;
   syncCachedSuffix: string;
+  syncRateLimitedSidebar(age?: string): string;
+  syncCooldownSidebar(minutes: number): string;
+  syncCacheAgeMinutes(minutes: number): string;
+  syncCacheAgeHours(hours: number): string;
   syncCompleted(succeeded: number, total: number, seconds: string): string;
   syncPartialSucceeded(succeeded: number, total: number, failed: number): string;
   syncFailedAll(failed: number, total: number): string;
   syncTimedOut(seconds: string): string;
   syncNotDelivered: string;
+  syncRateLimitedToast(age?: string): string;
+  syncCooldownToast(minutes: number): string;
 
   // ---- errors ---------------------------------------------------------
   credUnavailable(reason: string): string;
@@ -122,11 +128,21 @@ const ZH: Messages = {
   syncTimeoutSidebar: "同步超时",
   syncUnavailableSidebar: "同步未送达",
   syncCachedSuffix: "，数字为缓存",
+  syncRateLimitedSidebar: (age) =>
+    age ? `Tavily 限流，显示 ${age}的缓存` : "Tavily 限流，显示缓存",
+  syncCooldownSidebar: (minutes) => `限流冷却中，${minutes} 分钟后再试`,
+  syncCacheAgeMinutes: (minutes) => (minutes <= 0 ? "刚刚" : `${minutes} 分钟前`),
+  syncCacheAgeHours: (hours) => `${hours} 小时前`,
   syncCompleted: (succeeded, total, seconds) => `已同步 ${succeeded}/${total} · ${seconds}`,
   syncPartialSucceeded: (succeeded, total, failed) => `部分同步 ${succeeded}/${total}，${failed} 把失败`,
   syncFailedAll: (failed, total) => `同步失败：${failed}/${total} 把全部失败`,
   syncTimedOut: (seconds) => `同步超时（${seconds}）`,
   syncNotDelivered: "同步请求未送达代理",
+  syncRateLimitedToast: (age) =>
+    age
+      ? `Tavily 拒绝了这批同步（429 限流），显示 ${age}的缓存；后台自动同步会在下一轮重试`
+      : "Tavily 拒绝了这批同步（429 限流），显示缓存；后台自动同步会在下一轮重试",
+  syncCooldownToast: (minutes) => `刚才已被限流，${minutes} 分钟后再试`,
 
   credUnavailable: (reason) => `OpenCode 的 Tavily 凭据不可用：${reason}`,
   fileReadFailed: (match, path) => `无法读取文件引用："${match}"（${path}）`,
@@ -185,11 +201,21 @@ const EN: Messages = {
   syncTimeoutSidebar: "sync timed out",
   syncUnavailableSidebar: "sync not delivered",
   syncCachedSuffix: " · numbers are cached",
+  syncRateLimitedSidebar: (age) =>
+    age ? `Tavily throttled · cache from ${age}` : "Tavily throttled · showing cache",
+  syncCooldownSidebar: (minutes) => `throttled · retry in ${minutes} min`,
+  syncCacheAgeMinutes: (minutes) => (minutes <= 0 ? "just now" : `${minutes} min ago`),
+  syncCacheAgeHours: (hours) => `${hours} h ago`,
   syncCompleted: (succeeded, total, seconds) => `synced ${succeeded}/${total} · ${seconds}`,
   syncPartialSucceeded: (succeeded, total, failed) => `partly synced ${succeeded}/${total}, ${failed} failed`,
   syncFailedAll: (failed, total) => `sync failed: all ${failed}/${total} keys`,
   syncTimedOut: (seconds) => `sync timed out (${seconds})`,
   syncNotDelivered: "sync request did not reach the proxy",
+  syncRateLimitedToast: (age) =>
+    age
+      ? `Tavily rejected the sync batch (429) · cache from ${age}; the background sync retries next cycle`
+      : "Tavily rejected the sync batch (429) · showing cache; the background sync retries next cycle",
+  syncCooldownToast: (minutes) => `throttled a moment ago · retry in ${minutes} min`,
 
   credUnavailable: (reason) => `OpenCode Tavily credential unavailable: ${reason}`,
   fileReadFailed: (match, path) => `cannot read file reference: "${match}" (${path})`,
